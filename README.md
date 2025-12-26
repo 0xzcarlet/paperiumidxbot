@@ -1,5 +1,7 @@
 # Paperium: High-Performance IHSG Day Trading Bot
 
+![Paperium Banner](images/image.png)
+
 Paperium is an automated **AI-driven Day Trading system** optimized for the Indonesia Stock Exchange (IHSG). It uses a sophisticated "Dual-Brain" architecture (XGBoost + Structural GD/SD) to identify high-probability intraday setups.
 
 Designed for both beginners and advanced traders, Paperium focuses on **high win rates (>80%)** by combining machine learning with structural price action analysis.
