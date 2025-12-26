@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import config
 from data.storage import DataStorage
 from data.fetcher import DataFetcher
-from ml.model import EnsembleModel
 from scripts.ml_backtest import MLBacktest
 from rich.console import Console
 
@@ -37,10 +36,8 @@ class AutoTrainer:
     def __init__(self):
         self.storage = DataStorage(config.data.db_path)
         self.champion_metadata = self._load_metadata()
-        # Migration: Ensure all keys exist
-        for k in ['xgboost', 'gd_sd']:
-            if k not in self.champion_metadata:
-                self.champion_metadata[k] = {'win_rate': 0.0, 'date': None}
+        if 'xgboost' not in self.champion_metadata:
+            self.champion_metadata['xgboost'] = {'win_rate': 0.0, 'date': None}
         
     def _load_metadata(self) -> Dict:
         """Load tracking of current best models."""
@@ -51,8 +48,7 @@ class AutoTrainer:
             except:
                 pass
         return {
-            'xgboost': {'win_rate': 0.0, 'date': None},
-            'gd_sd': {'win_rate': 0.0, 'date': None}
+            'xgboost': {'win_rate': 0.0, 'date': None}
         }
 
     def _save_metadata(self):
@@ -65,7 +61,6 @@ class AutoTrainer:
         """Run the rigorous Train -> Backtest -> Verify loop (Optimized)"""
         console.print("[bold cyan]Starting Optimized Auto-Training Loop[/bold cyan]")
         console.print(f"Current XGB Champion: [green]{self.champion_metadata.get('xgboost', {'win_rate':0})['win_rate']:.1%}[/green]")
-        console.print(f"Current GD/SD Champion: [green]{self.champion_metadata.get('gd_sd', {'win_rate':0})['win_rate']:.1%}[/green]")
         
         # Step 0: Initial Data Loading & Feature Calculation (LOAD ONCE)
         console.print(f"\n[yellow]⏳ Phase 0: One-time Data Preparation ({days} days eval, {train_window} days train)...[/yellow]")
@@ -99,7 +94,7 @@ class AutoTrainer:
             console.print(f"\n[bold magenta]Optimization Iteration {iteration}[/bold magenta]")
             
             iter_summary = {}
-            for model_type in ['xgboost', 'gd_sd']:
+            for model_type in ['xgboost']:
                 console.print(f"\n[bold cyan]Evaluating Model Type: {model_type.upper()}[/bold cyan]")
                 
                 # Step 1: Initialize Backtester
@@ -121,24 +116,17 @@ class AutoTrainer:
                     console.print(f"  [bold]{model_type.upper()} Results:[/bold] Effective WR: {effective_wr:.1%} | Total Return: {ret:.1%}")
                     iter_summary[model_type] = effective_wr
                     
-                    # Champion Comparison Logic
-                    current_best_wr = self.champion_metadata[model_type]['win_rate']
-                    if model_type == 'xgboost':
-                        fname = 'xgb'
-                    else:
-                        fname = 'sd'
-                    save_path = f"models/global_{fname}_champion.pkl"
+                    # Champion Comparison Logic (XGBoost only)
+                    current_best_wr = self.champion_metadata['xgboost']['win_rate']
+                    save_path = "models/global_xgb_champion.pkl"
                     
                     if effective_wr > current_best_wr or not os.path.exists(save_path):
                         improvement = (effective_wr - current_best_wr) if current_best_wr > 0 else effective_wr
                         console.print(f"  [bold green]🚀 Improved Performance! (+{improvement:.1%})[/bold green]")
                         
-                        if model_type == 'xgboost':
-                            bt.global_xgb.save(save_path)
-                        else:
-                            bt.global_sd.save(save_path)
+                        bt.global_xgb.save(save_path)
                             
-                        self.champion_metadata[model_type] = {
+                        self.champion_metadata['xgboost'] = {
                             'win_rate': effective_wr,
                             'total_return': ret,
                             'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),

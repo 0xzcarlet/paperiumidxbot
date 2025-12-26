@@ -37,7 +37,6 @@ class Position:
     """Represents a trading position."""
     ticker: str
     order_type: str  # MARKET or LIMIT
-    model_type: str  # xgboost or gd_sd
     entry_price: float
     limit_price: Optional[float]  # For limit orders
     stop_loss: float
@@ -80,7 +79,6 @@ class PositionManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
                     order_type TEXT NOT NULL,
-                    model_type TEXT DEFAULT 'xgboost',
                     entry_price REAL NOT NULL,
                     limit_price REAL,
                     stop_loss REAL NOT NULL,
@@ -101,11 +99,6 @@ class PositionManager:
                 )
             """)
             
-            # Migration: Add model_type if it doesn't exist
-            try:
-                cursor.execute("SELECT model_type FROM positions LIMIT 1")
-            except sqlite3.OperationalError:
-                cursor.execute("ALTER TABLE positions ADD COLUMN model_type TEXT DEFAULT 'xgboost'")
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS daily_performance (
@@ -130,11 +123,11 @@ class PositionManager:
             
             cursor.execute("""
                 INSERT INTO positions 
-                (ticker, order_type, model_type, entry_price, limit_price, stop_loss, take_profit,
+                (ticker, order_type, entry_price, limit_price, stop_loss, take_profit,
                  shares, position_value, signal_score, created_date, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                position.ticker, position.order_type, position.model_type, position.entry_price,
+                position.ticker, position.order_type, position.entry_price,
                 position.limit_price, position.stop_loss, position.take_profit,
                 position.shares, position.position_value, position.signal_score,
                 position.created_date, position.status

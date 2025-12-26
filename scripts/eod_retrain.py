@@ -29,7 +29,7 @@ from config import config
 from data.fetcher import DataFetcher
 from data.storage import DataStorage
 from signals.combiner import SignalCombiner
-from ml.model import EnsembleModel
+from ml.model import TradingModel
 from strategy.position_manager import PositionManager, PositionStatus
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -178,7 +178,7 @@ class EODRetraining:
         return expired
     
     def _retrain_model(self) -> Dict:
-        """Retrain global ensemble model with pooled data from all tickers."""
+        """Retrain global XGBoost model with pooled data from all tickers."""
         all_data = self.storage.get_prices()
         
         if all_data.empty:
@@ -214,57 +214,32 @@ class EODRetraining:
                 
             full_df = pd.concat(pooled_data)
             
-            # ---------------------------------------------------------
-            # MULTI-MODEL CHALLENGER LOGIC
-            # ---------------------------------------------------------
+            # Retrain XGBoost
             self.metrics_summary = {'trained_count': ticker_count}
             
-            for m_type in ['xgboost', 'gd_sd']:
-                progress.add_task(f"Retraining {m_type.upper()}...", total=None)
-                
-                if m_type == 'xgboost':
-                    from ml.model import TradingModel
-                    challenger = TradingModel(config.ml)
-                    # Warm start: load current champion if available
-                    champ_path = os.path.join('models', 'global_xgb_champion.pkl')
-                    if os.path.exists(champ_path):
-                        try:
-                            challenger.load(champ_path)
-                            metrics = challenger.train(full_df, base_model=challenger.model)
-                        except:
-                            metrics = challenger.train(full_df)
-                    else:
-                        metrics = challenger.train(full_df)
-                    acc_challenger = metrics.get('cv_accuracy', 0)
-                else:
-                    from ml.supply_demand_model import SupplyDemandModel
-                    challenger = SupplyDemandModel()
-                    # Warm start: load current champion if available
-                    champ_path = os.path.join('models', 'global_sd_champion.pkl')
-                    warm_start = False
-                    if os.path.exists(champ_path):
-                        try:
-                            challenger.load(champ_path)
-                            warm_start = True
-                        except:
-                            pass
-                    metrics = challenger.train(full_df, warm_start=warm_start)
-                    acc_challenger = metrics.get('accuracy', 0)
-                
-                current_best = self.trainer.champion_metadata[m_type]['win_rate']
-                if m_type == 'xgboost':
-                    fname = 'xgb'
-                else:
-                    fname = 'sd'
-                save_path = f"models/global_{fname}_champion.pkl"
-                
-                if acc_challenger > 0.60: 
-                    console.print(f"  [green]✓ {m_type.upper()} passed validation ({acc_challenger:.1%})[/green]")
-                    challenger.save(save_path)
-                    self.metrics_summary[m_type] = {'status': 'UPDATED', 'accuracy': acc_challenger}
-                else:
-                    console.print(f"  [red]✕ {m_type.upper()} failed validation ({acc_challenger:.1%})[/red]")
-                    self.metrics_summary[m_type] = {'status': 'KEPT_OLD', 'accuracy': current_best}
+            progress.add_task("Retraining XGBOOST...", total=None)
+            challenger = TradingModel(config.ml)
+            # Warm start: load current champion if available
+            champ_path = os.path.join('models', 'global_xgb_champion.pkl')
+            if os.path.exists(champ_path):
+                try:
+                    challenger.load(champ_path)
+                    metrics = challenger.train(full_df, base_model=challenger.model)
+                except:
+                    metrics = challenger.train(full_df)
+            else:
+                metrics = challenger.train(full_df)
+            
+            acc_challenger = metrics.get('cv_accuracy', 0)
+            
+            if acc_challenger > 0.60: 
+                console.print(f"  [green]✓ XGBOOST passed validation ({acc_challenger:.1%})[/green]")
+                challenger.save(os.path.join('models', 'global_xgb_champion.pkl'))
+                self.metrics_summary['xgboost'] = {'status': 'UPDATED', 'accuracy': acc_challenger}
+            else:
+                current_best = self.trainer.champion_metadata['xgboost']['win_rate']
+                console.print(f"  [red]✕ XGBOOST failed validation ({acc_challenger:.1%})[/red]")
+                self.metrics_summary['xgboost'] = {'status': 'KEPT_OLD', 'accuracy': current_best}
             
             progress.stop()
 
@@ -332,12 +307,11 @@ class EODRetraining:
         if metrics:
             console.print(f"\n[bold]MODEL RETRAINING[/bold]")
             console.print(f"  Stocks trained:   {metrics.get('trained_count', 0)}")
-            for m_type in ['xgboost', 'gd_sd']:
-                if m_type in metrics:
-                    m_data = metrics[m_type]
-                    style = "green" if m_data['status'] == 'UPDATED' else "yellow"
-                    console.print(f"  {m_type.upper()}: [{style}]{m_data['status']}[/{style}] "
-                                 f"(Acc: {m_data['accuracy']:.1%})")
+            if 'xgboost' in metrics:
+                m_data = metrics['xgboost']
+                style = "green" if m_data['status'] == 'UPDATED' else "yellow"
+                console.print(f"  XGBOOST: [{style}]{m_data['status']}[/{style}] "
+                             f"(Acc: {m_data['accuracy']:.1%})")
         
         # Overall performance
         perf = self.position_manager.get_performance_summary()

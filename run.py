@@ -19,7 +19,7 @@ def main_menu():
     clear_screen()
     console.print(Panel.fit(
         "[bold cyan]Paperium Trading System[/bold cyan]\n"
-        "[dim]Dual-Model Intelligence (XGB, GD/SD)[/dim]",
+        "[dim]XGBoost Intelligence[/dim]",
         border_style="cyan"
     ))
     
@@ -54,13 +54,8 @@ def backtest_menu():
     clear_screen()
     console.print(Panel.fit("[bold cyan]Backtest & Verification Lab[/bold cyan]", border_style="cyan"))
     
-    console.print("\n[bold]Select Model to Evaluate:[/bold]")
-    console.print("1. XGBoost (Champion)")
-    console.print("2. GD/SD (Structural)")
-    console.print("3. Ensemble (Recommended)")
-    
-    m_choice = Prompt.ask("\nSelect model", choices=["1", "2", "3"], default="3")
-    m_map = {"1": "xgboost", "2": "gd_sd", "3": "ensemble"}
+    m_choice = Prompt.ask("\nSelect model", choices=["1"], default="1")
+    m_map = {"1": "xgboost"}
     m_type = m_map[m_choice]
     
     start_date = Prompt.ask("Enter start date (YYYY-MM-DD)", default="2024-01-01")
@@ -80,12 +75,8 @@ def train_menu():
     clear_screen()
     console.print(Panel.fit("[bold cyan]Model Training Lab[/bold cyan]", border_style="cyan"))
     
-    console.print("\n[bold]Select Model Type:[/bold]")
-    console.print("1. XGBoost (Champion)")
-    console.print("2. GD/SD (Structural)")
-    
-    m_choice = Prompt.ask("\nSelect model", choices=["1", "2"], default="1")
-    m_map = {"1": "xgboost", "2": "gd_sd"}
+    m_choice = Prompt.ask("\nSelect model", choices=["1"], default="1")
+    m_map = {"1": "xgboost"}
     m_type = m_map[m_choice]
     
     target = Prompt.ask("Enter target Win Rate (e.g. 0.85)", default="0.80")

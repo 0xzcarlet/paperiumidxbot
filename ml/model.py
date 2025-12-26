@@ -15,7 +15,6 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import xgboost as xgb
 
 from .features import FeatureEngineer
-from .supply_demand_model import SupplyDemandModel
 
 logger = logging.getLogger(__name__)
 
@@ -311,91 +310,3 @@ class TradingModel:
         self.performance_history = model_data.get('performance_history', [])
         
         logger.info(f"Model loaded from {path}, last trained: {self.last_trained}")
-
-
-class EnsembleModel:
-    """
-    High-performance ensemble of XGBoost and SupplyDemandModel.
-    Matches the architecture validated in backtesting.
-    """
-    
-    def __init__(self, config=None, model_dir: str = 'models'):
-        self.config = config
-        # If passed global config, use the ml sub-config for TradingModel
-        ml_config = getattr(config, 'ml', config)
-        self.xgb_model = TradingModel(ml_config)
-        self.sd_model = SupplyDemandModel()
-        self.model_dir = model_dir
-        
-    def train(self, df: pd.DataFrame, warm_start: bool = False) -> Dict[str, float]:
-        """
-        Train ensemble models using pooled data.
-        Note: The backtest showed global pooling is superior.
-        """
-        # XGBoost training
-        xgb_metrics = self.xgb_model.train(
-            df, 
-            base_model=self.xgb_model.model if warm_start else None
-        )
-        
-        # SD (Gradient Descent) training
-        sd_metrics = self.sd_model.train(df, warm_start=warm_start)
-        
-        return {
-            'xgb_trained': self.xgb_model.model is not None,
-            'sd_trained': self.sd_model.gd_model.weights is not None,
-            'xgb_metrics': xgb_metrics,
-            'sd_metrics': sd_metrics
-        }
-    
-    def predict_latest(self, df: pd.DataFrame, ticker: str = "default") -> Dict:
-        """Ensemble prediction for latest data point."""
-        scores = []
-        
-        # XGBoost contribution
-        if self.xgb_model.model is not None:
-            _, xgb_proba = self.xgb_model.predict_latest(df)
-            scores.append((xgb_proba - 0.5) * 2)
-            
-        # SD contribution
-        if self.sd_model.gd_model.weights is not None:
-            sd_res = self.sd_model.predict_latest(df, ticker)
-            scores.append(sd_res['combined_score'])
-            
-        if not scores:
-            return {'combined_score': 0.0, 'signals': {}}
-            
-        # Weighted mean: if only one exists, it is 100% weight.
-        # If both exist, we give them equal weight for now (Ensemble).
-        combined_score = np.mean(scores)
-        
-        return {
-            'combined_score': float(combined_score),
-            'components': {
-                'xgb': float(scores[0]) if len(scores) > 0 and self.xgb_model.model is not None else 0,
-                'sd': float(scores[1]) if len(scores) > 1 else (float(scores[0]) if self.xgb_model.model is None else 0)
-            }
-        }
-
-    def save(self, name: str = 'global_ensemble'):
-        """Save both models."""
-        xgb_path = os.path.join(self.model_dir, f"{name}_xgb.pkl")
-        sd_path = os.path.join(self.model_dir, f"{name}_sd.pkl")
-        
-        self.xgb_model.save(xgb_path)
-        self.sd_model.save(sd_path)
-        logger.info(f"Ensemble saved to {self.model_dir}")
-        
-    def load(self, name: str = 'global_ensemble'):
-        """Load both models, preferring champion versions if they exist."""
-        # Try champion first, then fall back to provided name
-        xgb_champ = os.path.join(self.model_dir, "global_xgb_champion.pkl")
-        sd_champ = os.path.join(self.model_dir, "global_sd_champion.pkl")
-        
-        xgb_path = xgb_champ if os.path.exists(xgb_champ) else os.path.join(self.model_dir, f"{name}_xgb.pkl")
-        sd_path = sd_champ if os.path.exists(sd_champ) else os.path.join(self.model_dir, f"{name}_sd.pkl")
-        
-        if os.path.exists(xgb_path):
-            self.xgb_model.load(xgb_path)
-        if os.path.exists(sd_path):
-            self.sd_model.load(sd_path)

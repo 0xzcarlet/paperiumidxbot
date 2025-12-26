@@ -27,7 +27,6 @@ from config import config
 from data.storage import DataStorage
 from data.fetcher import get_sector_mapping
 from ml.model import TradingModel
-from ml.supply_demand_model import SupplyDemandModel
 from signals.screener import Screener
 
 logging.basicConfig(level=logging.WARNING)
@@ -36,17 +35,13 @@ console = Console()
 
 class MLBacktest:
     """
-    ML-based backtester using:
-    1. XGBoost model for next-day return prediction
-    2. Gradient Descent + Supply/Demand model
-    
-    Combines both models for final signal.
+    ML-based backtester using global XGBoost model for next-day return prediction.
     """
     
-    def __init__(self, model_type: str = 'ensemble', retrain: bool = False):
+    def __init__(self, model_type: str = 'xgboost', retrain: bool = False):
         """
         Args:
-            model_type: 'xgboost', 'gd_sd', or 'ensemble'
+            model_type: 'xgboost'
             retrain: If True, will train models before backtesting. 
                      If False, will load existing champion models or reject.
         """
@@ -65,9 +60,8 @@ class MLBacktest:
         self.take_profit_pct = 0.08
         self.max_hold_days = 5
         
-        # Models (Global models instead of per-ticker)
+        # Model (Global XGBoost)
         self.global_xgb = None
-        self.global_sd = None
     
     def run(self, start_date: str, end_date: str, train_window: int = 252, pre_loaded_data: Optional[pd.DataFrame] = None):
         """
@@ -106,8 +100,8 @@ class MLBacktest:
                     warnings.simplefilter('error', RuntimeWarning)
                     trained_counts = self._train_models(all_data, start_date, train_window)
                 
-                if trained_counts['xgb'] == 0 and trained_counts['sd'] == 0:
-                    console.print("[red]Critical: No models were trained successfuly. Aborting simulation.[/red]")
+                if trained_counts['xgb'] == 0:
+                    console.print("[red]Critical: XGBoost model was not trained successfuly. Aborting simulation.[/red]")
                     return
             else:
                 # Evaluation mode: Load existing models
@@ -203,7 +197,7 @@ class MLBacktest:
         """Load global models from the models/ directory."""
         success = True
         
-        if self.model_type in ['xgboost', 'ensemble']:
+        if self.model_type == 'xgboost':
             xgb_path = os.path.join("models", "global_xgb_champion.pkl")
             if os.path.exists(xgb_path):
                 try:
@@ -215,20 +209,6 @@ class MLBacktest:
                     success = False
             else:
                 console.print(f"  [red]✗[/red] XGBoost champion not found at {xgb_path}")
-                success = False
-
-        if self.model_type in ['gd_sd', 'ensemble']:
-            sd_path = os.path.join("models", "global_sd_champion.pkl")
-            if os.path.exists(sd_path):
-                try:
-                    self.global_sd = SupplyDemandModel()
-                    self.global_sd.load(sd_path)
-                    console.print("  ✓ Loaded Global GD+S/D model")
-                except Exception as e:
-                    console.print(f"  [red]✗[/red] Failed to load GD/SD: {e}")
-                    success = False
-            else:
-                console.print(f"  [red]✗[/red] GD/SD champion not found at {sd_path}")
                 success = False
         
         return success
@@ -263,7 +243,7 @@ class MLBacktest:
             pool_y.append(y)
             
         if not pool_X:
-            return {'xgb': 0, 'sd': 0}
+            return {'xgb': 0}
             
         X_combined = pd.concat(pool_X)
         y_combined = pd.concat(pool_y)
@@ -276,10 +256,10 @@ class MLBacktest:
         
         if len(X_combined) < 100:
             console.print("[red]Critical: Not enough training samples pooled.[/red]")
-            return {'xgb': 0, 'sd': 0}
+            return {'xgb': 0}
 
         # Train Global XGBoost
-        if self.model_type in ['xgboost', 'ensemble']:
+        if self.model_type == 'xgboost':
             try:
                 self.global_xgb = TradingModel(config.ml)
                 self.global_xgb.feature_names = X_combined.columns.tolist()
@@ -314,62 +294,19 @@ class MLBacktest:
                 console.print(f"  [red]✗[/red] Global XGBoost training failed: {e}")
                 self.global_xgb = None
 
-        # Train Global GD+S/D
-        if self.model_type in ['gd_sd', 'ensemble']:
-            try:
-                self.global_sd = SupplyDemandModel()
-                
-                # Warm Start: Try to load existing champion
-                sd_champ_path = os.path.join("models", "global_sd_champion.pkl")
-                if os.path.exists(sd_champ_path):
-                    try:
-                        self.global_sd.load(sd_champ_path)
-                        console.print(f"  → Loaded SD champion for Warm Start")
-                        warm_start = True
-                    except Exception as load_err:
-                        console.print(f"  [yellow]→ Could not load SD champion for warm start: {load_err}[/yellow]")
-                        warm_start = False
-                else:
-                    warm_start = False
-
-                # Pool raw data for GD model
-                raw_train_pooled = []
-                for ticker in all_data['ticker'].unique():
-                    ticker_data = all_data[all_data['ticker'] == ticker].copy()
-                    ticker_data = ticker_data.sort_values('date')
-                    train_data = ticker_data[ticker_data['date'] < start]
-                    if len(train_data) >= 40:
-                        raw_train_pooled.append(train_data)
-                
-                if raw_train_pooled:
-                    combined_raw = pd.concat(raw_train_pooled)
-                    self.global_sd.train(combined_raw, warm_start=warm_start)
-                    console.print("  ✓ Trained Global GD+S/D model")
-            except Exception as e:
-                console.print(f"  [red]✗[/red] Global GD+S/D training failed: {e}")
-                self.global_sd = None
         return {
-            'xgb': 1 if self.global_xgb else 0,
-            'sd': 1 if self.global_sd else 0
+            'xgb': 1 if self.global_xgb else 0
         }
     
     def _get_prediction(self, ticker: str, df: pd.DataFrame) -> float:
-        """Get combined prediction score using global models."""
-        scores = []
-        
-        # XGBoost prediction
-        if self.global_xgb and self.model_type in ['xgboost', 'ensemble']:
+        """Get prediction score using global XGBoost model."""
+        if self.global_xgb:
             try:
                 prob = self.global_xgb.predict_latest(df)
-                scores.append((prob - 0.5) * 2)  # Convert to -1 to 1
+                return (prob - 0.5) * 2  # Convert to -1 to 1
             except:
                 pass
-        
-        
-        if not scores:
-            return 0.0
-        
-        return np.mean(scores)
+        return 0.0
     
     def _simulate(self, all_data: pd.DataFrame, start_date: str, end_date: str, is_pre_featured: bool = False) -> Dict:
         """Run simulation with pre-calculated features for speed."""
@@ -405,12 +342,11 @@ class MLBacktest:
         # Pre-calculate batch scores for ML models (XGBoost and GD part)
         console.print("[yellow]Batch predicting ML scores for all tickers...[/yellow]")
         xgb_scores = {}  # ticker -> Series of scores
-        gd_scores = {}   # ticker -> Series of scores
         
         for ticker, ticker_df_indexed in ticker_data_map.items():
             ticker_df = ticker_df_indexed.reset_index() # Need original df for feature engineer
             # XGBoost Batch
-            if self.global_xgb and self.model_type in ['xgboost', 'ensemble']:
+            if self.global_xgb:
                 try:
                     # Ensure features are created on the full historical data for the ticker
                     X, _ = self.global_xgb.feature_engineer.create_features(ticker_df)
@@ -421,36 +357,16 @@ class MLBacktest:
                         xgb_scores[ticker] = pd.Series((probs - 0.5) * 2, index=X.index)
                 except Exception as e:
                     console.print(f"  [red]✗[/red] XGBoost batch prediction failed for {ticker}: {e}")
-            
-            # GD Batch
-            if self.global_sd and self.model_type in ['gd_sd', 'ensemble']:
-                try:
-                    # GD model predicts on the raw data, not feature-engineered X
-                    # The predict method in SupplyDemandModel expects a DataFrame with 'date' as a column
-                    # Assuming self.global_sd.gd_model.predict can handle a DataFrame and return scores indexed by date
-                    # If gd_model.predict expects a specific format, this might need adjustment.
-                    # For now, assuming it returns a Series of scores indexed by date.
-                    gd_pred_df = ticker_df[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
-                    gd_pred_df = gd_pred_df.set_index('date')
-                    probs = self.global_sd.gd_model.predict(gd_pred_df) # Assuming this returns a Series indexed by date
-                    gd_scores[ticker] = pd.Series((probs - 0.5) * 2, index=gd_pred_df.index)
-                except Exception as e:
-                    console.print(f"  [red]✗[/red] GD batch prediction failed for {ticker}: {e}")
         
         # Log prediction stats
         all_xgb = pd.concat(xgb_scores.values()) if xgb_scores else pd.Series()
-        all_gd = pd.concat(gd_scores.values()) if gd_scores else pd.Series()
         
         # Explicitly check for NaNs in scores
         if not all_xgb.empty and all_xgb.isna().any():
             raise ValueError("NaN detected in XGBoost predicted scores.")
-        if not all_gd.empty and all_gd.isna().any():
-            raise ValueError("NaN detected in GD predicted scores. Check feature normalization.")
             
         if not all_xgb.empty:
             console.print(f"  XGB scores dist: mean={all_xgb.mean():.3f}, max={all_xgb.max():.3f}, min={all_xgb.min():.3f}")
-        if not all_gd.empty:
-            console.print(f"  GD scores dist: mean={all_gd.mean():.3f}, max={all_gd.max():.3f}, min={all_gd.min():.3f}")
         
         console.print(f"  Simulating {len(all_dates)} trading days...")
         
@@ -536,35 +452,11 @@ class MLBacktest:
                         if not self.screener._check_criteria(ticker_hist, ticker):
                             continue
                         
-                        # Get scores for this ticker on this day
-                        ticker_scores = []
-                        
                         # Use batch-predicted XGB score
                         if ticker in xgb_scores and date in xgb_scores[ticker].index:
-                            ticker_scores.append(xgb_scores[ticker].loc[date])
-                        
-                        # Use batch-predicted GD score
-                        if ticker in gd_scores and date in gd_scores[ticker].index:
-                            ticker_scores.append(gd_scores[ticker].loc[date])
-                        
-                        # Calculate S/D score (still dynamic but cached version)
-                        if self.global_sd and self.model_type in ['gd_sd', 'ensemble']:
-                            try:
-                                # Get the ticker's full processed data (indexed by date)
-                                ticker_df_indexed = ticker_data_map.get(ticker)
-                                if ticker_df_indexed is not None:
-                                    # Slice historical data up to the current date
-                                    historical = ticker_df_indexed.loc[:date].reset_index()
-                                    if not historical.empty:
-                                        sd_res = self.global_sd.sd_detector.score_price_action(
-                                            historical, day_data[day_data['ticker'] == ticker].iloc[0]['close'], ticker
-                                        )
-                                        ticker_scores.append(sd_res['score'])
-                            except Exception as e:
-                                # console.print(f"  [red]✗[/red] S/D prediction failed for {ticker} on {date}: {e}")
-                                pass # Suppress frequent errors for cleaner output
-                        
-                        prediction_score = np.mean(ticker_scores) if ticker_scores else 0.0
+                            prediction_score = xgb_scores[ticker].loc[date]
+                        else:
+                            prediction_score = 0.0
                         max_seen_score = max(max_seen_score, prediction_score)
                         
                         # Logic for buy signal (score threshold lowered to 0.1 for debugging)
@@ -752,8 +644,8 @@ def main():
     parser = argparse.ArgumentParser(description='ML-Based Backtest')
     parser.add_argument('--start', default='2024-01-01', help='Start date')
     parser.add_argument('--end', default='2025-09-30', help='End date')
-    parser.add_argument('--model', choices=['xgboost', 'gd_sd', 'ensemble'], 
-                       default='ensemble', help='Model type')
+    parser.add_argument('--model', choices=['xgboost'], 
+                       default='xgboost', help='Model type')
     parser.add_argument('--window', type=int, default=252, help='Training window in trading days')
     parser.add_argument('--retrain', action='store_true', help='Force retraining of models before evaluation')
     

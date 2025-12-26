@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--target', type=float, default=0.80, help='Target effective Win Rate (0.0 to 1.0)')
     parser.add_argument('--force', action='store_true', help='Ignore existing champion metrics')
     parser.add_argument('--max-iter', type=int, default=5, help='Maximum optimization iterations')
-    parser.add_argument('--type', choices=['xgboost', 'gd_sd'], default='xgboost', help='Model type to train')
+    parser.add_argument('--type', choices=['xgboost'], default='xgboost', help='Model type to train')
 
     args = parser.parse_args()
     
