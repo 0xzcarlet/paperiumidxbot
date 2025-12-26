@@ -420,13 +420,45 @@ class MorningSignals:
             
             console.print(table)
         
-        # New Signals Table
-        console.print("\n[bold]NEW TRADING SIGNALS[/bold]")
-        
         if not new_signals:
+            console.print("\n[bold yellow]NEW TRADING SIGNALS[/bold yellow]")
             console.print("  No new signals meet criteria")
             return
+
+        # Split signals by model type
+        ensemble_signals = [s for s in new_signals if s['model_type'] == 'ensemble']
+        xgboost_signals = [s for s in new_signals if s['model_type'] == 'xgboost']
+        gd_sd_signals = [s for s in new_signals if s['model_type'] == 'gd_sd']
+
+        # 1. ENSEMBLE CONSENSUS TABLE
+        if ensemble_signals:
+            console.print("\n[bold cyan]I. DUAL-BRAIN CONSENSUS (ENSEMBLE)[/bold cyan]")
+            self._print_signal_table(ensemble_signals)
         
+        # 2. XGBOOST PREDICTOR TABLE
+        if xgboost_signals:
+            console.print("\n[bold magenta]II. XGBOOST PREDICTOR INSIGHTS[/bold magenta]")
+            self._print_signal_table(xgboost_signals)
+
+        # 3. GD/SD ARCHITECT TABLE
+        if gd_sd_signals:
+            console.print("\n[bold yellow]III. GD/SD STRUCTURAL INSIGHTS[/bold yellow]")
+            self._print_signal_table(gd_sd_signals)
+        
+        # Summary
+        total_value = sum(s['position_value'] for s in new_signals)
+        market_orders = sum(1 for s in new_signals if s['order_type'] == 'MARKET')
+        limit_orders = len(new_signals) - market_orders
+        
+        console.print(f"\n[dim]Summary: {len(new_signals)} signals ("
+                     f"{len(ensemble_signals)} Ensemble, "
+                     f"{len(xgboost_signals)} XGB, "
+                     f"{len(gd_sd_signals)} SD) | "
+                     f"Market: {market_orders} | Limit: {limit_orders} | "
+                     f"Value: Rp {total_value:,.0f}[/dim]")
+
+    def _print_signal_table(self, signals: List[Dict]):
+        """Helper to print a rich table for a group of signals."""
         table = Table(box=box.ROUNDED)
         table.add_column("#", justify="right", style="dim")
         table.add_column("Ticker", style="cyan bold")
@@ -440,9 +472,8 @@ class MorningSignals:
         table.add_column("Shares", justify="right")
         table.add_column("Value", justify="right")
         
-        for i, sig in enumerate(new_signals, 1):
+        for i, sig in enumerate(signals, 1):
             order_style = "bold green" if sig['order_type'] == 'MARKET' else "yellow"
-            # Confidence is score scaled to % (max 100%)
             conf_pct = min(100, max(0, sig['score'] * 100))
             
             table.add_row(
@@ -460,15 +491,6 @@ class MorningSignals:
             )
         
         console.print(table)
-        
-        # Summary
-        total_value = sum(s['position_value'] for s in new_signals)
-        market_orders = sum(1 for s in new_signals if s['order_type'] == 'MARKET')
-        limit_orders = len(new_signals) - market_orders
-        
-        console.print(f"\n[dim]Total: {len(new_signals)} signals | "
-                     f"Market: {market_orders} | Limit: {limit_orders} | "
-                     f"Value: Rp {total_value:,.0f}[/dim]")
     
     def _save_positions(self, signals: List[Dict]):
         """Save new positions to database."""
