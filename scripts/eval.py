@@ -35,7 +35,8 @@ console = Console()
 
 class MLBacktest:
     """
-    ML-based evaluation using global XGBoost model for next-day return prediction.
+    ML-based evaluation using global XGBoost model for multi-day return prediction.
+    Target Horizon: 5-Day Forward Return (Day Trading Strategy)
     """
     
     def __init__(self, model_type: str = 'xgboost', retrain: bool = False):
@@ -148,49 +149,9 @@ class MLBacktest:
         return data
     
     def _add_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add features for ML models."""
-        df = df.copy()
-        
-        # Returns
-        df['return_1d'] = df['close'].pct_change()
-        df['return_5d'] = df['close'].pct_change(5)
-        df['return_20d'] = df['close'].pct_change(20)
-        
-        # Moving averages
-        df['sma_20'] = df['close'].rolling(20).mean()
-        df['sma_50'] = df['close'].rolling(50).mean()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0).ewm(span=14).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(span=14).mean()
-        rs = gain / loss.replace(0, np.inf)
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # MACD
-        ema12 = df['close'].ewm(span=12).mean()
-        ema26 = df['close'].ewm(span=26).mean()
-        df['macd'] = ema12 - ema26
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
-        
-        # ATR
-        high_low = df['high'] - df['low']
-        high_close = abs(df['high'] - df['close'].shift(1))
-        low_close = abs(df['low'] - df['close'].shift(1))
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['atr'] = tr.rolling(14).mean()
-        
-        # Volatility  
-        df['volatility'] = df['return_1d'].rolling(20).std()
-        
-        # Volume
-        df['volume_sma'] = df['volume'].rolling(20).mean()
-        df['rel_volume'] = df['volume'] / df['volume_sma']
-        
-        # Target
-        df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
-        
+        """Add internal features and use FeatureEngineer for ML training."""
+        # This now just returns the dataframe, as _train_models and _simulate 
+        # use FeatureEngineer which calculates everything needed (including target_horizon)
         return df
     
     def _load_models(self) -> bool:
@@ -355,12 +316,19 @@ class MLBacktest:
             # XGBoost Batch
             if self.global_xgb:
                 try:
-                    # Ensure features are created on the full historical data for the ticker
-                    X, _ = self.global_xgb.feature_engineer.create_features(ticker_df)
+                    # Use prepare_inference_features for prediction to avoid dropping any rows
+                    X = self.global_xgb.feature_engineer.prepare_inference_features(ticker_df)
                     # Align X's index with the original ticker_df's date index for lookup
-                    X = X.set_index(ticker_df.loc[X.index, 'date'])
+                    X.index = ticker_df['date']
+                    
                     if not X.empty:
-                        probs = self.global_xgb.model.predict_proba(X)[:, 1]
+                        # Ensure features match model's expected features
+                        if self.global_xgb.feature_names:
+                            missing = set(self.global_xgb.feature_names) - set(X.columns)
+                            for f in missing: X[f] = 0
+                            X = X[self.global_xgb.feature_names]
+                        
+                        probs = self.global_xgb.model.predict_proba(X.values)[:, 1]
                         xgb_scores[ticker] = pd.Series((probs - 0.5) * 2, index=X.index)
                 except Exception as e:
                     console.print(f"  [red]✗[/red] XGBoost batch prediction failed for {ticker}: {e}")

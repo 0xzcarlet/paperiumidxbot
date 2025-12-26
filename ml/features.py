@@ -25,8 +25,10 @@ class FeatureEngineer:
         """
         if config:
             self.feature_lags = config.feature_lags
+            self.target_horizon = getattr(config, 'target_horizon', 5)  # Default 5 for day trading
         else:
             self.feature_lags = [1, 2, 3, 5, 10, 20]
+            self.target_horizon = 5  # 5-day forward prediction for day trading
     
     def create_features(
         self, 

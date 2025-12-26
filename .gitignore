@@ -36,3 +36,4 @@ backtest/
 # UV
 uv.lock
 .uv/
+.cache

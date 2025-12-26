@@ -515,6 +515,9 @@ class MLConfig:
     training_window: int = 252  # Rolling window size (1 year)
     validation_split: float = 0.2
     
+    # Prediction target (aligned with max_holding_days for day trading)
+    target_horizon: int = 5  # Predict 5-day forward return (matches max hold)
+    
     # XGBoost parameters
     n_estimators: int = 100
     max_depth: int = 5

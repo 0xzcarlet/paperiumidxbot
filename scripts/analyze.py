@@ -382,9 +382,9 @@ class StockAnalyzer:
         console.print(table)
         
         # ═══════════════════════════════════════════════════════════════════
-        # SECTION 3: AI PREDICTION & SIGNALS
+        # SECTION 3: ML PREDICTION & SIGNALS
         # ═══════════════════════════════════════════════════════════════════
-        console.print("\n[bold blue]━━━ AI PREDICTION & SIGNALS ━━━[/bold blue]")
+        console.print("\n[bold blue]━━━ ML PREDICTION & SIGNALS ━━━[/bold blue]")
         
         table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
         table.add_column("", style="dim")
