@@ -1,6 +1,6 @@
 # Paperium: High-Performance IHSG Day Trading Bot
 
-![Paperium Banner](images/image.png)
+![Paperium Training Model](images/training-models.png)
 
 Paperium is an automated **AI-driven Day Trading system** optimized for the Indonesia Stock Exchange (IHSG). It uses a sophisticated "Dual-Brain" architecture (XGBoost + Structural GD/SD) to identify high-probability intraday setups.
 
@@ -72,6 +72,9 @@ uv run python scripts/morning_signals.py
 ```
 *   **Mode 1 (Test)**: Just see the recommendations (Scan only).
 *   **Mode 2 (Live)**: Execute and track the trades in your virtual portfolio.
+
+![Paperium Morning Signals](images/morning-signals.png)
+
 
 ### 5. Daily Management & Retraining (EOD)
 Run this after the market closes (**16:00+ WIB**) to close out your day trades and learn from today's market.
