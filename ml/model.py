@@ -306,7 +306,20 @@ class TradingModel:
         
         self.model = model_data['model']
         self.feature_names = model_data['feature_names']
-        self.last_trained = model_data['last_trained']
+        self.last_trained = model_data.get('last_trained')
         self.performance_history = model_data.get('performance_history', [])
+        
+        # Try to get last_trained from champion_metadata.json if not in pkl
+        if self.last_trained is None:
+            metadata_path = os.path.join(os.path.dirname(path), "champion_metadata.json")
+            if os.path.exists(metadata_path):
+                try:
+                    import json
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    if 'xgboost' in metadata and 'date' in metadata['xgboost']:
+                        self.last_trained = metadata['xgboost']['date']
+                except Exception:
+                    pass
         
         logger.info(f"Model loaded from {path}, last trained: {self.last_trained}")

@@ -5,6 +5,7 @@ Comprehensive analysis of a single ticker with signals, prediction, and recommen
 """
 import sys
 import os
+import re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -15,19 +16,34 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
-from rich.markdown import Markdown
+from rich.text import Text
 
 from config import config
 from data.storage import DataStorage
-from data.fetcher import DataFetcher, get_sector_mapping
+from data.fetcher import get_sector_mapping
 from ml.model import TradingModel
 from ml.features import FeatureEngineer
 from signals.combiner import SignalCombiner
 from signals.regime_detector import RegimeDetector, MarketRegime
-from signals.screener import Screener
 from strategy.position_sizer import PositionSizer
 
 console = Console()
+
+
+def validate_ticker(ticker: str) -> str:
+    """
+    Validate and normalize ticker format.
+    - Must be 4 letters (e.g., BBCA, TLKM, ASII)
+    - Auto-adds .JK suffix for Indonesia Stock Exchange
+    """
+    # Remove any existing suffix
+    base_ticker = ticker.upper().replace(".JK", "").replace("-", "").strip()
+    
+    # Validate: must be exactly 4 alphabetic characters
+    if not re.match(r'^[A-Z]{4}$', base_ticker):
+        raise ValueError(f"Invalid ticker '{ticker}'. Must be 4 letters (e.g., BBCA, TLKM, ASII)")
+    
+    return f"{base_ticker}.JK"
 
 
 class StockAnalyzer:
@@ -35,41 +51,86 @@ class StockAnalyzer:
     
     def __init__(self):
         self.storage = DataStorage(config.data.db_path)
-        self.fetcher = DataFetcher(config.data.stock_universe)
         self.sector_mapping = get_sector_mapping()
         self.signal_combiner = SignalCombiner(config)
         self.feature_engineer = FeatureEngineer(config.ml)
-        self.screener = Screener(config)
         self.position_sizer = PositionSizer(config.portfolio)
         self.regime_detector = RegimeDetector()
         
         # Load XGBoost model
         self.model = None
+        self.model_trained_date = None
         model_path = os.path.join("models", "global_xgb_champion.pkl")
         if os.path.exists(model_path):
             self.model = TradingModel(config.ml)
             self.model.load(model_path)
+            self.model_trained_date = self.model.last_trained
     
     def analyze(self, ticker: str, portfolio_value: float = 100_000_000):
         """Run comprehensive analysis on a single ticker."""
-        console.print(Panel.fit(
-            f"[bold cyan]Stock Analysis: {ticker}[/bold cyan]\n"
-            f"[dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]",
-            border_style="cyan"
-        ))
         
-        # 1. Fetch latest data using yfinance directly
-        console.print("\n[yellow]Fetching Data...[/yellow]")
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        # Validate and normalize ticker
+        try:
+            ticker = validate_ticker(ticker)
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            return None
+        
+        # Header
+        self._print_header(ticker)
+        
+        # Fetch data
+        price_data = self._fetch_data(ticker)
+        if price_data is None:
+            return None
+        
+        # Run all analyses
+        basic_info = self._get_basic_info(ticker, price_data)
+        technicals = self._get_technicals(price_data)
+        ml_prediction = self._get_ml_prediction(price_data)
+        signals = self._get_signals(price_data)
+        regime = self._get_market_regime()
+        history = self._get_history(price_data)
+        
+        # Generate and display comprehensive report
+        self._display_report(
+            ticker, price_data, basic_info, technicals, 
+            ml_prediction, signals, regime, history, portfolio_value
+        )
+        
+        return {
+            'ticker': ticker,
+            'basic_info': basic_info,
+            'technicals': technicals,
+            'ml_prediction': ml_prediction,
+            'signals': signals,
+            'regime': regime
+        }
+    
+    def _print_header(self, ticker: str):
+        """Print analysis header."""
+        console.print()
+        console.print(Panel(
+            f"[bold white]{ticker}[/bold white]\n"
+            f"[dim]Stock Analysis Report • {datetime.now().strftime('%Y-%m-%d %H:%M')}[/dim]",
+            border_style="blue",
+            padding=(0, 2)
+        ))
+    
+    def _fetch_data(self, ticker: str) -> pd.DataFrame:
+        """Fetch price data from Yahoo Finance."""
+        console.print("\n[dim]Fetching market data...[/dim]", end=" ")
         
         try:
             import yfinance as yf
             stock = yf.Ticker(ticker)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365)
+            
             price_data = stock.history(start=start_date, end=end_date, auto_adjust=True)
             
-            if price_data.empty:
-                console.print(f"[red]No data found for {ticker}[/red]")
+            if price_data.empty or len(price_data) < 60:
+                console.print("[red]✗ Insufficient data[/red]")
                 return None
             
             # Standardize columns
@@ -83,76 +144,32 @@ class StockAnalyzer:
             price_data = price_data.rename(columns={'Date': 'date'})
             price_data['date'] = pd.to_datetime(price_data['date']).dt.tz_localize(None)
             
+            console.print(f"[green]✓[/green] {len(price_data)} days loaded")
+            return price_data
+            
         except Exception as e:
-            console.print(f"[red]Failed to fetch data: {e}[/red]")
+            console.print(f"[red]✗ Failed: {e}[/red]")
             return None
-        
-        # 2. Basic Info
-        self._display_basic_info(ticker, price_data)
-        
-        # 3. Technical Analysis
-        self._display_technical_analysis(price_data)
-        
-        # 4. ML Prediction
-        prediction = self._get_ml_prediction(price_data)
-        
-        # 5. Signal Analysis
-        signals = self._analyze_signals(price_data)
-        
-        # 6. Market Regime
-        regime = self._get_market_regime()
-        
-        # 7. Historical Performance
-        self._display_historical_performance(price_data)
-        
-        # 8. Position Recommendation
-        self._generate_recommendation(
-            ticker, price_data, prediction, signals, regime, portfolio_value
-        )
-        
-        return {
-            'ticker': ticker,
-            'prediction': prediction,
-            'signals': signals,
-            'regime': regime
-        }
     
-    def _display_basic_info(self, ticker: str, df: pd.DataFrame):
-        """Display basic stock information."""
-        console.print("\n[bold]Basic Information[/bold]")
-        
+    def _get_basic_info(self, ticker: str, df: pd.DataFrame) -> dict:
+        """Get basic stock information."""
         latest = df.iloc[-1]
         prev_close = df.iloc[-2]['close'] if len(df) > 1 else latest['close']
-        daily_change = (latest['close'] - prev_close) / prev_close * 100
         
-        # Calculate stats
-        week_return = (latest['close'] / df.iloc[-5]['close'] - 1) * 100 if len(df) >= 5 else 0
-        month_return = (latest['close'] / df.iloc[-22]['close'] - 1) * 100 if len(df) >= 22 else 0
-        ytd_return = (latest['close'] / df.iloc[0]['close'] - 1) * 100
-        
-        avg_volume = df['volume'].tail(20).mean()
-        
-        table = Table(box=box.ROUNDED)
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", justify="right")
-        
-        table.add_row("Sector", self.sector_mapping.get(ticker, "Unknown"))
-        table.add_row("Last Price", f"Rp {latest['close']:,.0f}")
-        table.add_row("Daily Change", f"[{'green' if daily_change >= 0 else 'red'}]{daily_change:+.2f}%[/]")
-        table.add_row("Week Return", f"[{'green' if week_return >= 0 else 'red'}]{week_return:+.2f}%[/]")
-        table.add_row("Month Return", f"[{'green' if month_return >= 0 else 'red'}]{month_return:+.2f}%[/]")
-        table.add_row("YTD Return", f"[{'green' if ytd_return >= 0 else 'red'}]{ytd_return:+.2f}%[/]")
-        table.add_row("Avg Volume (20d)", f"{avg_volume:,.0f}")
-        table.add_row("52W High", f"Rp {df['high'].max():,.0f}")
-        table.add_row("52W Low", f"Rp {df['low'].min():,.0f}")
-        
-        console.print(table)
+        return {
+            'sector': self.sector_mapping.get(ticker, "Unknown"),
+            'last_price': latest['close'],
+            'daily_change': (latest['close'] - prev_close) / prev_close * 100,
+            'week_return': (latest['close'] / df.iloc[-5]['close'] - 1) * 100 if len(df) >= 5 else 0,
+            'month_return': (latest['close'] / df.iloc[-22]['close'] - 1) * 100 if len(df) >= 22 else 0,
+            'ytd_return': (latest['close'] / df.iloc[0]['close'] - 1) * 100,
+            'avg_volume': df['volume'].tail(20).mean(),
+            'high_52w': df['high'].max(),
+            'low_52w': df['low'].min()
+        }
     
-    def _display_technical_analysis(self, df: pd.DataFrame):
-        """Display technical indicators."""
-        console.print("\n[bold]Technical Analysis[/bold]")
-        
-        # Calculate indicators
+    def _get_technicals(self, df: pd.DataFrame) -> dict:
+        """Calculate technical indicators."""
         df = df.copy()
         
         # RSI
@@ -160,165 +177,118 @@ class StockAnalyzer:
         gain = delta.where(delta > 0, 0).ewm(span=14).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(span=14).mean()
         rs = gain / loss.replace(0, np.inf)
-        df['rsi'] = 100 - (100 / (1 + rs))
+        rsi = (100 - (100 / (1 + rs))).iloc[-1]
         
         # MACD
         ema12 = df['close'].ewm(span=12).mean()
         ema26 = df['close'].ewm(span=26).mean()
-        df['macd'] = ema12 - ema26
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
+        macd = (ema12 - ema26).iloc[-1]
+        macd_signal = (ema12 - ema26).ewm(span=9).mean().iloc[-1]
         
         # Moving Averages
-        df['sma_20'] = df['close'].rolling(20).mean()
-        df['sma_50'] = df['close'].rolling(50).mean()
+        sma20 = df['close'].rolling(20).mean().iloc[-1]
+        sma50 = df['close'].rolling(50).mean().iloc[-1]
+        price = df['close'].iloc[-1]
         
         # Volatility
-        df['volatility'] = df['close'].pct_change().rolling(20).std() * np.sqrt(252) * 100
+        volatility = df['close'].pct_change().rolling(20).std().iloc[-1] * np.sqrt(252) * 100
         
-        latest = df.iloc[-1]
-        
-        table = Table(box=box.ROUNDED)
-        table.add_column("Indicator", style="cyan")
-        table.add_column("Value", justify="right")
-        table.add_column("Signal", justify="center")
-        
-        # RSI
-        rsi = latest['rsi']
-        rsi_signal = "[green]Oversold[/green]" if rsi < 30 else "[red]Overbought[/red]" if rsi > 70 else "[yellow]Neutral[/yellow]"
-        table.add_row("RSI (14)", f"{rsi:.1f}", rsi_signal)
-        
-        # MACD
-        macd = latest['macd']
-        macd_sig = latest['macd_signal']
-        macd_signal = "[green]Bullish[/green]" if macd > macd_sig else "[red]Bearish[/red]"
-        table.add_row("MACD", f"{macd:.2f}", macd_signal)
-        
-        # Price vs MA
-        price = latest['close']
-        ma20 = latest['sma_20']
-        ma50 = latest['sma_50']
-        ma_signal = "[green]Above MAs[/green]" if price > ma20 and price > ma50 else "[red]Below MAs[/red]" if price < ma20 and price < ma50 else "[yellow]Mixed[/yellow]"
-        table.add_row("Price vs MAs", f"vs MA20: {(price/ma20-1)*100:+.1f}%", ma_signal)
-        
-        # Volatility
-        vol = latest['volatility']
-        vol_signal = "[red]High[/red]" if vol > 40 else "[yellow]Medium[/yellow]" if vol > 20 else "[green]Low[/green]"
-        table.add_row("Volatility (Ann.)", f"{vol:.1f}%", vol_signal)
-        
-        console.print(table)
+        return {
+            'rsi': rsi,
+            'rsi_signal': 'Oversold' if rsi < 30 else 'Overbought' if rsi > 70 else 'Neutral',
+            'macd': macd,
+            'macd_signal': 'Bullish' if macd > macd_signal else 'Bearish',
+            'price_vs_ma20': (price / sma20 - 1) * 100,
+            'price_vs_ma50': (price / sma50 - 1) * 100,
+            'ma_signal': 'Above' if price > sma20 and price > sma50 else 'Below' if price < sma20 and price < sma50 else 'Mixed',
+            'volatility': volatility,
+            'vol_signal': 'High' if volatility > 40 else 'Medium' if volatility > 20 else 'Low'
+        }
     
     def _get_ml_prediction(self, df: pd.DataFrame) -> dict:
         """Get ML model prediction."""
-        console.print("\n[bold]ML Prediction (XGBoost)[/bold]")
-        
-        if self.model is None:
-            console.print("[yellow]No trained model found. Please train first.[/yellow]")
-            return {'probability': 0.5, 'direction': 'NEUTRAL', 'confidence': 0}
+        if self.model is None or self.model.model is None:
+            return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': 'No model trained'}
         
         try:
-            # Add features
+            # Prepare features
             df_feat = df.copy()
             X = self.feature_engineer.prepare_inference_features(df_feat)
             
             if X.empty:
-                console.print("[yellow]Could not prepare features.[/yellow]")
-                return {'probability': 0.5, 'direction': 'NEUTRAL', 'confidence': 0}
+                return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': 'Feature preparation failed'}
+            
+            # Align features with model's expected features
+            if self.model.feature_names:
+                # Only keep features that the model was trained on
+                available_features = [f for f in self.model.feature_names if f in X.columns]
+                missing_features = [f for f in self.model.feature_names if f not in X.columns]
+                
+                if missing_features:
+                    # Add missing features as 0 (safe default)
+                    for feat in missing_features:
+                        X[feat] = 0
+                
+                # Reorder columns to match model's expected order
+                X = X[self.model.feature_names]
             
             # Get prediction for latest row
             latest_features = X.iloc[-1:].values
             prob = self.model.model.predict_proba(latest_features)[0, 1]
             
             direction = "BULLISH" if prob > 0.55 else "BEARISH" if prob < 0.45 else "NEUTRAL"
-            confidence = abs(prob - 0.5) * 200  # 0-100 scale
+            confidence = abs(prob - 0.5) * 200
             
-            color = "green" if direction == "BULLISH" else "red" if direction == "BEARISH" else "yellow"
-            
-            table = Table(box=box.ROUNDED)
-            table.add_column("Metric", style="cyan")
-            table.add_column("Value", justify="right")
-            
-            table.add_row("Up Probability", f"{prob*100:.1f}%")
-            table.add_row("Direction", f"[{color}]{direction}[/{color}]")
-            table.add_row("Confidence", f"{confidence:.0f}%")
-            
-            console.print(table)
-            
-            return {'probability': prob, 'direction': direction, 'confidence': confidence}
+            return {
+                'probability': prob,
+                'direction': direction,
+                'confidence': confidence,
+                'error': None
+            }
             
         except Exception as e:
-            console.print(f"[red]Prediction failed: {e}[/red]")
-            return {'probability': 0.5, 'direction': 'NEUTRAL', 'confidence': 0}
+            return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': str(e)}
     
-    def _analyze_signals(self, df: pd.DataFrame) -> dict:
-        """Analyze all trading signals."""
-        console.print("\n[bold]Signal Analysis[/bold]")
-        
+    def _get_signals(self, df: pd.DataFrame) -> dict:
+        """Get trading signals."""
         try:
             signals_df = self.signal_combiner.calculate_signals(df)
             latest = signals_df.iloc[-1]
             
-            table = Table(box=box.ROUNDED)
-            table.add_column("Signal Type", style="cyan")
-            table.add_column("Value", justify="right")
-            table.add_column("Interpretation", justify="center")
-            
-            # Composite score
             score = latest.get('composite_score', 0)
-            score_interp = "[green]Strong Buy[/green]" if score > 0.5 else "[green]Buy[/green]" if score > 0.2 else "[red]Sell[/red]" if score < -0.2 else "[yellow]Hold[/yellow]"
-            table.add_row("Composite Score", f"{score:.2f}", score_interp)
-            
-            # Signal
             signal = latest.get('signal', 'HOLD')
-            sig_color = "green" if signal == "BUY" else "red" if signal == "SELL" else "yellow"
-            table.add_row("Signal", f"[{sig_color}]{signal}[/{sig_color}]", "")
-            
-            console.print(table)
             
             return {
                 'composite_score': score,
                 'signal': signal,
-                'buy_signals': 3 if score > 0.3 else 2 if score > 0 else 1,
-                'sell_signals': 3 if score < -0.3 else 2 if score < 0 else 1
+                'strength': 'Strong' if abs(score) > 0.5 else 'Moderate' if abs(score) > 0.2 else 'Weak'
             }
-            
         except Exception as e:
-            console.print(f"[yellow]Signal analysis failed: {e}[/yellow]")
-            return {'composite_score': 0, 'signal': 'HOLD', 'buy_signals': 0, 'sell_signals': 0}
+            return {'composite_score': 0, 'signal': 'HOLD', 'strength': 'N/A'}
     
-    def _get_market_regime(self) -> MarketRegime:
-        """Get current market regime from IHSG index."""
-        console.print("\n[bold]Market Regime[/bold]")
-        
+    def _get_market_regime(self) -> dict:
+        """Get current market regime."""
         try:
-            # Fetch IHSG index using yfinance directly
             import yfinance as yf
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=180)
-            
             ihsg = yf.Ticker("^JKSE")
-            ihsg_data = ihsg.history(start=start_date, end=end_date, auto_adjust=True)
+            ihsg_data = ihsg.history(start=datetime.now() - timedelta(days=180), end=datetime.now())
             
             if not ihsg_data.empty:
-                ihsg_data = ihsg_data.rename(columns={'Close': 'close'})
-                prices = ihsg_data['close']
+                prices = ihsg_data['Close']
                 regime = self.regime_detector.detect_regime(prices)
-                
-                color = "red" if regime == MarketRegime.HIGH_VOL else "green" if regime == MarketRegime.LOW_VOL else "yellow"
                 multiplier = self.regime_detector.get_position_multiplier(regime)
                 
-                console.print(f"  Current Regime: [{color}]{regime.value}[/{color}]")
-                console.print(f"  Position Multiplier: {multiplier:.1f}x")
-                
-                return regime
-        except Exception as e:
-            console.print(f"[yellow]Could not determine regime: {e}[/yellow]")
+                return {
+                    'regime': regime.value,
+                    'multiplier': multiplier
+                }
+        except Exception:
+            pass
         
-        return MarketRegime.NORMAL
+        return {'regime': 'NORMAL', 'multiplier': 1.0}
     
-    def _display_historical_performance(self, df: pd.DataFrame):
-        """Display historical performance statistics."""
-        console.print("\n[bold]Historical Performance[/bold]")
-        
+    def _get_history(self, df: pd.DataFrame) -> dict:
+        """Get historical performance stats."""
         returns = df['close'].pct_change().dropna()
         
         # Monthly returns
@@ -327,43 +297,121 @@ class StockAnalyzer:
         df_monthly = df_monthly.set_index('date')
         monthly_returns = df_monthly['close'].resample('ME').last().pct_change().dropna()
         
-        table = Table(box=box.ROUNDED)
-        table.add_column("Period", style="cyan")
-        table.add_column("Return", justify="right")
-        table.add_column("Win Rate", justify="right")
-        
-        # Last 3 months
-        for i, month_ret in enumerate(monthly_returns.tail(3)):
-            month_name = monthly_returns.tail(3).index[i].strftime('%b %Y')
-            color = "green" if month_ret >= 0 else "red"
-            table.add_row(month_name, f"[{color}]{month_ret*100:+.1f}%[/{color}]", "")
-        
-        # Overall stats
         positive_days = (returns > 0).sum()
         total_days = len(returns)
-        daily_win_rate = positive_days / total_days * 100 if total_days > 0 else 0
         
-        table.add_row("", "", "")
-        table.add_row("Daily Win Rate", "", f"{daily_win_rate:.1f}%")
-        table.add_row("Avg Daily Return", f"{returns.mean()*100:+.3f}%", "")
-        table.add_row("Max Daily Gain", f"[green]{returns.max()*100:+.1f}%[/green]", "")
-        table.add_row("Max Daily Loss", f"[red]{returns.min()*100:+.1f}%[/red]", "")
-        
-        console.print(table)
+        return {
+            'daily_win_rate': positive_days / total_days * 100 if total_days > 0 else 0,
+            'avg_daily_return': returns.mean() * 100,
+            'max_gain': returns.max() * 100,
+            'max_loss': returns.min() * 100,
+            'monthly_returns': monthly_returns.tail(3).to_dict()
+        }
     
-    def _generate_recommendation(
-        self, 
-        ticker: str, 
-        df: pd.DataFrame, 
-        prediction: dict, 
-        signals: dict, 
-        regime: MarketRegime,
+    def _display_report(
+        self, ticker: str, df: pd.DataFrame, 
+        basic: dict, tech: dict, ml: dict, 
+        signals: dict, regime: dict, history: dict,
         portfolio_value: float
     ):
-        """Generate final recommendation."""
-        console.print("\n" + "=" * 60)
-        console.print(f"[bold][{ticker}] RECOMMENDATION[/bold]")
-        console.print("=" * 60)
+        """Display the comprehensive analysis report."""
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # SECTION 1: PRICE OVERVIEW
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold blue]━━━ PRICE OVERVIEW ━━━[/bold blue]")
+        
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
+        
+        daily_color = "green" if basic['daily_change'] >= 0 else "red"
+        week_color = "green" if basic['week_return'] >= 0 else "red"
+        month_color = "green" if basic['month_return'] >= 0 else "red"
+        ytd_color = "green" if basic['ytd_return'] >= 0 else "red"
+        
+        table.add_row(
+            "Last Price", f"Rp {basic['last_price']:,.0f}",
+            "Sector", basic['sector']
+        )
+        table.add_row(
+            "Daily", f"[{daily_color}]{basic['daily_change']:+.2f}%[/{daily_color}]",
+            "Week", f"[{week_color}]{basic['week_return']:+.2f}%[/{week_color}]"
+        )
+        table.add_row(
+            "Month", f"[{month_color}]{basic['month_return']:+.2f}%[/{month_color}]",
+            "YTD", f"[{ytd_color}]{basic['ytd_return']:+.2f}%[/{ytd_color}]"
+        )
+        table.add_row(
+            "52W High", f"Rp {basic['high_52w']:,.0f}",
+            "52W Low", f"Rp {basic['low_52w']:,.0f}"
+        )
+        console.print(table)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # SECTION 2: TECHNICAL INDICATORS
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold blue]━━━ TECHNICAL INDICATORS ━━━[/bold blue]")
+        
+        table = Table(box=box.SIMPLE, show_header=True)
+        table.add_column("Indicator", style="dim")
+        table.add_column("Value", justify="right")
+        table.add_column("Signal", justify="center")
+        
+        rsi_color = "green" if tech['rsi_signal'] == 'Oversold' else "red" if tech['rsi_signal'] == 'Overbought' else "yellow"
+        macd_color = "green" if tech['macd_signal'] == 'Bullish' else "red"
+        ma_color = "green" if tech['ma_signal'] == 'Above' else "red" if tech['ma_signal'] == 'Below' else "yellow"
+        vol_color = "red" if tech['vol_signal'] == 'High' else "yellow" if tech['vol_signal'] == 'Medium' else "green"
+        
+        table.add_row("RSI (14)", f"{tech['rsi']:.1f}", f"[{rsi_color}]{tech['rsi_signal']}[/{rsi_color}]")
+        table.add_row("MACD", f"{tech['macd']:.2f}", f"[{macd_color}]{tech['macd_signal']}[/{macd_color}]")
+        table.add_row("vs MA20", f"{tech['price_vs_ma20']:+.1f}%", f"[{ma_color}]{tech['ma_signal']}[/{ma_color}]")
+        table.add_row("Volatility", f"{tech['volatility']:.1f}%", f"[{vol_color}]{tech['vol_signal']}[/{vol_color}]")
+        console.print(table)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # SECTION 3: AI PREDICTION & SIGNALS
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold blue]━━━ AI PREDICTION & SIGNALS ━━━[/bold blue]")
+        
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
+        
+        # ML Prediction
+        if ml['probability'] is not None:
+            ml_color = "green" if ml['direction'] == 'BULLISH' else "red" if ml['direction'] == 'BEARISH' else "yellow"
+            table.add_row(
+                "ML Direction", f"[{ml_color}]{ml['direction']}[/{ml_color}]",
+                "Confidence", f"{ml['confidence']:.0f}%"
+            )
+            table.add_row(
+                "Up Probability", f"{ml['probability']*100:.1f}%",
+                "Model Date", self.model_trained_date or "Unknown"
+            )
+        else:
+            table.add_row("ML Prediction", f"[yellow]{ml.get('error', 'Unavailable')}[/yellow]", "", "")
+        
+        # Signals
+        sig_color = "green" if signals['signal'] == 'BUY' else "red" if signals['signal'] == 'SELL' else "yellow"
+        table.add_row(
+            "Signal", f"[{sig_color}]{signals['signal']}[/{sig_color}]",
+            "Strength", signals['strength']
+        )
+        table.add_row(
+            "Composite Score", f"{signals['composite_score']:.2f}",
+            "Market Regime", regime['regime']
+        )
+        console.print(table)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # SECTION 4: POSITION RECOMMENDATION
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n[bold blue]━━━ RECOMMENDATION ━━━[/bold blue]")
         
         latest = df.iloc[-1]
         entry_price = latest['close']
@@ -379,83 +427,78 @@ class StockAnalyzer:
         take_profit = entry_price + (3 * atr)
         
         # Determine action
-        bullish_factors = 0
-        bearish_factors = 0
+        bullish = 0
+        bearish = 0
         
-        if prediction['direction'] == 'BULLISH':
-            bullish_factors += 2
-        elif prediction['direction'] == 'BEARISH':
-            bearish_factors += 2
+        if ml['direction'] == 'BULLISH': bullish += 2
+        elif ml['direction'] == 'BEARISH': bearish += 2
         
-        if signals['signal'] == 'BUY':
-            bullish_factors += 2
-        elif signals['signal'] == 'SELL':
-            bearish_factors += 2
+        if signals['signal'] == 'BUY': bullish += 2
+        elif signals['signal'] == 'SELL': bearish += 2
         
-        if signals['composite_score'] > 0.2:
-            bullish_factors += 1
-        elif signals['composite_score'] < -0.2:
-            bearish_factors += 1
+        if signals['composite_score'] > 0.2: bullish += 1
+        elif signals['composite_score'] < -0.2: bearish += 1
         
-        # Get volatility for sizing
-        volatility = df['close'].pct_change().rolling(20).std().iloc[-1] * np.sqrt(252)
+        if bullish >= 4:
+            action, action_color = "STRONG BUY", "bold green"
+        elif bullish >= 2 and bearish < 2:
+            action, action_color = "BUY", "green"
+        elif bearish >= 4:
+            action, action_color = "STRONG SELL", "bold red"
+        elif bearish >= 2 and bullish < 2:
+            action, action_color = "SELL", "red"
+        else:
+            action, action_color = "HOLD", "yellow"
         
         # Position sizing
+        volatility = df['close'].pct_change().rolling(20).std().iloc[-1] * np.sqrt(252)
         position = self.position_sizer.calculate_position_size(
             portfolio_value=portfolio_value,
             stock_volatility=volatility,
             avg_market_volatility=0.20,
             entry_price=entry_price,
             stop_loss=stop_loss,
-            confidence=prediction['confidence'] / 100,
-            market_regime=regime.value
+            confidence=ml['confidence'] / 100 if ml['confidence'] else 0.5,
+            market_regime=regime['regime']
         )
         
-        # Recommendation
-        if bullish_factors >= 4:
-            action = "STRONG BUY"
-            action_color = "bold green"
-        elif bullish_factors >= 2 and bearish_factors < 2:
-            action = "BUY"
-            action_color = "green"
-        elif bearish_factors >= 4:
-            action = "STRONG SELL"
-            action_color = "bold red"
-        elif bearish_factors >= 2 and bullish_factors < 2:
-            action = "SELL"
-            action_color = "red"
-        else:
-            action = "HOLD"
-            action_color = "yellow"
+        console.print(f"\n  [{action_color}]>>> {action} <<<[/{action_color}]")
         
-        console.print(f"\n[{action_color}]>>> {action} <<<[/{action_color}]\n")
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
+        table.add_column("", style="dim")
+        table.add_column("", justify="right")
         
-        table = Table(box=box.ROUNDED, title="Position Details")
-        table.add_column("Parameter", style="cyan")
-        table.add_column("Value", justify="right")
-        
-        table.add_row("Entry Price", f"Rp {entry_price:,.0f}")
-        table.add_row("Stop Loss", f"Rp {stop_loss:,.0f} ({(stop_loss/entry_price-1)*100:+.1f}%)")
-        table.add_row("Take Profit", f"Rp {take_profit:,.0f} ({(take_profit/entry_price-1)*100:+.1f}%)")
-        table.add_row("", "")
-        table.add_row("Suggested Shares", f"{position['shares']:,}")
-        table.add_row("Position Value", f"Rp {position['position_value']:,.0f}")
-        table.add_row("Portfolio %", f"{position['position_pct']:.1f}%")
-        table.add_row("Risk Amount", f"Rp {position['risk_amount']:,.0f}")
-        table.add_row("", "")
-        table.add_row("Bullish Factors", f"{bullish_factors}")
-        table.add_row("Bearish Factors", f"{bearish_factors}")
-        table.add_row("Regime Adjustment", f"{position['regime_adjustment']:.1f}x")
-        
+        table.add_row(
+            "Entry", f"Rp {entry_price:,.0f}",
+            "Shares", f"{position['shares']:,}"
+        )
+        table.add_row(
+            "Stop Loss", f"Rp {stop_loss:,.0f} ({(stop_loss/entry_price-1)*100:+.1f}%)",
+            "Position", f"Rp {position['position_value']:,.0f}"
+        )
+        table.add_row(
+            "Take Profit", f"Rp {take_profit:,.0f} ({(take_profit/entry_price-1)*100:+.1f}%)",
+            "Portfolio %", f"{position['position_pct']:.1f}%"
+        )
+        table.add_row(
+            "Risk/Reward", f"1 : {abs((take_profit-entry_price)/(entry_price-stop_loss)):.1f}",
+            "Risk Amount", f"Rp {position['risk_amount']:,.0f}"
+        )
         console.print(table)
         
-        # Disclaimer
-        console.print("\n[dim]!! This is not financial advice. Always do your own research !![/dim]")
+        # ═══════════════════════════════════════════════════════════════════
+        # FOOTER
+        # ═══════════════════════════════════════════════════════════════════
+        console.print("\n" + "─" * 60)
+        console.print("[dim]⚠️  This is not financial advice. Always do your own research.[/dim]")
+        console.print()
 
 
 def main():
     parser = argparse.ArgumentParser(description='Single Stock Analysis')
-    parser.add_argument('ticker', type=str, help='Stock ticker (e.g., BBCA.JK)')
+    parser.add_argument('ticker', type=str, help='Stock ticker (e.g., BBCA or BBCA.JK)')
     parser.add_argument('--portfolio', type=float, default=100_000_000, 
                         help='Portfolio value for position sizing (default: 100M IDR)')
     
