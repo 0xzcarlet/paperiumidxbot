@@ -20,7 +20,9 @@ python run.py
 This menu-driven interface will guide you through:
 1.  **Morning Ritual**: Generating signals before the market opens.
 2.  **Evening Update**: Updating results and retraining for tomorrow.
-3.  **Model Lab**: Training and optimizing your AI models.
+3.  **Model Lab**: Targeted training for specific "Champion" brains.
+4.  **Global Sweep**: Automating the search for the absolute best parameters.
+5.  **Backtest Lab**: Verifying model performance on historical data.
 
 ---
 
@@ -29,7 +31,8 @@ This menu-driven interface will guide you through:
 For those who want full control, here is the complete step-by-step process of running your trading floor.
 
 ### 1. Initial Setup & Data Prep
-Before training any AI, you need clean data.
+Before training any AI, you need clean data. Paperium now features **Hourly Smart Caching** to ensure you always have the latest data without hitting API limits.
+
 ```bash
 # 1. Clean the stock list (removes illiquid/suspended stocks)
 uv run python scripts/clean_universe.py
@@ -52,61 +55,52 @@ You have two ways to prepare your models. The goal is to create a **"Champion"**
     uv run python scripts/train_model.py --type xgboost --target 0.85 --days 180
     ```
 
-### 3. Evaluating & Backtesting
-Never trade blindly. Use the backtester to see how your "Champion" would have performed on fresh data or different timeframes.
+### 3. Evaluating & Backtesting (The Verification Lab)
+Paperium follows a **"Strict Evaluation"** policy. You cannot backtest a model that hasn't been trained yet.
 
-*   **Simple Backtest**: Use the latest 3 months to verify accuracy.
+*   **Evaluation Mode (Default)**: Tests your existing Champion models on a specific window.
     ```bash
-    uv run python scripts/ml_backtest.py --start 2024-06-01 --end 2024-09-30
+    uv run python scripts/ml_backtest.py --model ensemble --start 2024-01-01 --end 2024-03-01
     ```
-*   **Custom Windows**: Test how much history the model needs to "learn" effectively.
+*   **Retrain Mode**: Specifically force a fresh training cycle before the backtest.
     ```bash
-    # Test using a 500-day learning window
-    uv run python scripts/ml_backtest.py --window 500
+    uv run python scripts/ml_backtest.py --model xgboost --retrain
     ```
 
-### 4. Getting Morning Signals (Day Trading)
-Run this daily between **08:30 – 08:50 WIB** before the Jakarta market opens.
+### 4. Getting Morning Signals (3-Signal Consensus)
+Run this daily before the Jakarta market opens. The script now provides **Three Distinct Perspectives**:
+1.  **XGBOOST**: Pure statistical probability.
+2.  **GD_SD**: Pure structural supply/demand floors.
+3.  **ENSEMBLE**: The high-conviction consensus of both "brains."
+
 ```bash
 uv run python scripts/morning_signals.py
 ```
-*   **Mode 1 (Test)**: Just see the recommendations (Scan only).
-*   **Mode 2 (Live)**: Execute and track the trades in your virtual portfolio.
-
-![Paperium Morning Signals](images/morning-signals.png)
-
 
 ### 5. Daily Management & Retraining (EOD)
-Run this after the market closes (**16:00+ WIB**) to close out your day trades and learn from today's market.
+Run this after the market closes to learn from today's market.
 ```bash
 uv run python scripts/eod_retrain.py
 ```
 *   **Settlement**: Automatically calculates PnL for positions that hit Stop-Loss or Take-Profit.
-*   **Warm Start**: Retrains the models using a "Warm Start"—building on existing intelligence rather than starting from scratch.
+*   **Warm Start**: Retrains the models building on existing intelligence rather than starting from scratch.
 
 ---
 
 ## Core Philosophy: The Dual-Brain
 
 Paperium doesn't rely on just one indicator. It uses two distinct logic sets:
-1.  **The Predictor (XGBoost)**: A machine learning model that looks at dozens of technical features to predict the probability of a positive return tomorrow.
+1.  **The Predictor (XGBoost)**: A machine learning model that looks at dozens of technical features to predict probability.
 2.  **The Architect (GD/SD)**: Uses Gradient Descent to find structural Support and Demand zones. It only buys when price is at a high-conviction structural floor.
 
----
-
-## Configuration Hints
-
-All primary settings are held in `config.py`. Key areas for beginners:
-- **Risk Management**: Change `max_loss_pct` (Stop Loss) and `min_profit_pct` (Take Profit) in `ExitConfig`.
-- **Position Sizing**: Adjust `max_positions` and `base_position_pct` in `PortfolioConfig`.
-- **Learning**: Change the default `training_window` in `MLConfig`.
+The **Ensemble** mode combines these two into a consensus model for maximum risk mitigation.
 
 ---
 
 ## Key Directories
-- `/models`: Stores your `.pkl` Champion models (Incremental learning).
-- `/data`: Your SQLite database (`ihsg_trading.db`) containing price history and portfolio state.
-- `/scripts`: The executable tools for your daily workflow.
+- `/models`: Stores your `.pkl` Champion models.
+- `/.cache`: Stores hourly price snapshots for faster execution.
+- `/data`: Your SQLite database (`ihsg_trading.db`) containing price history.
 
 ---
 *Disclaimer: Trading stocks involves significant risk. This bot is a tool for decision support. Always use Test Mode before committing to live trading.*

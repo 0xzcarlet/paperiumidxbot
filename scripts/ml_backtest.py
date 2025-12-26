@@ -43,14 +43,17 @@ class MLBacktest:
     Combines both models for final signal.
     """
     
-    def __init__(self, model_type: str = 'ensemble'):
+    def __init__(self, model_type: str = 'ensemble', retrain: bool = False):
         """
         Args:
             model_type: 'xgboost', 'gd_sd', or 'ensemble'
+            retrain: If True, will train models before backtesting. 
+                     If False, will load existing champion models or reject.
         """
         self.storage = DataStorage(config.data.db_path)
         self.sector_mapping = get_sector_mapping()
         self.model_type = model_type
+        self.retrain = retrain
         self.screener = Screener(config)
         
         # Trading parameters
@@ -96,15 +99,23 @@ class MLBacktest:
             return
         
         try:
-            # Pre-train models with strict warning handling
-            console.print("[yellow]Training ML models...[/yellow]")
-            with warnings.catch_warnings():
-                warnings.simplefilter('error', RuntimeWarning)
-                trained_counts = self._train_models(all_data, start_date, train_window)
-            
-            if trained_counts['xgb'] == 0 and trained_counts['sd'] == 0:
-                console.print("[red]Critical: No models were trained successfuly. Aborting simulation.[/red]")
-                return
+            if self.retrain:
+                # Pre-train models with strict warning handling
+                console.print("[yellow]Training ML models...[/yellow]")
+                with warnings.catch_warnings():
+                    warnings.simplefilter('error', RuntimeWarning)
+                    trained_counts = self._train_models(all_data, start_date, train_window)
+                
+                if trained_counts['xgb'] == 0 and trained_counts['sd'] == 0:
+                    console.print("[red]Critical: No models were trained successfuly. Aborting simulation.[/red]")
+                    return
+            else:
+                # Evaluation mode: Load existing models
+                console.print("[yellow]Loading existing ML models for evaluation...[/yellow]")
+                if not self._load_models():
+                    console.print("[bold red]REJECTED: Required models do not exist.[/bold red]")
+                    console.print("Please train your models first using 'python scripts/train_model.py'.")
+                    return
                 
             # Run simulation
             console.print("[yellow]Running simulation...[/yellow]")
@@ -188,6 +199,40 @@ class MLBacktest:
         
         return df
     
+    def _load_models(self) -> bool:
+        """Load global models from the models/ directory."""
+        success = True
+        
+        if self.model_type in ['xgboost', 'ensemble']:
+            xgb_path = os.path.join("models", "global_xgb_champion.pkl")
+            if os.path.exists(xgb_path):
+                try:
+                    self.global_xgb = TradingModel(config.ml)
+                    self.global_xgb.load(xgb_path)
+                    console.print("  ✓ Loaded Global XGBoost model")
+                except Exception as e:
+                    console.print(f"  [red]✗[/red] Failed to load XGBoost: {e}")
+                    success = False
+            else:
+                console.print(f"  [red]✗[/red] XGBoost champion not found at {xgb_path}")
+                success = False
+
+        if self.model_type in ['gd_sd', 'ensemble']:
+            sd_path = os.path.join("models", "global_sd_champion.pkl")
+            if os.path.exists(sd_path):
+                try:
+                    self.global_sd = SupplyDemandModel()
+                    self.global_sd.load(sd_path)
+                    console.print("  ✓ Loaded Global GD+S/D model")
+                except Exception as e:
+                    console.print(f"  [red]✗[/red] Failed to load GD/SD: {e}")
+                    success = False
+            else:
+                console.print(f"  [red]✗[/red] GD/SD champion not found at {sd_path}")
+                success = False
+        
+        return success
+
     def _train_models(self, all_data: pd.DataFrame, start_date: str, train_window: int):
         """Train global models on pooled historical data."""
         start = pd.to_datetime(start_date)
@@ -710,10 +755,11 @@ def main():
     parser.add_argument('--model', choices=['xgboost', 'gd_sd', 'ensemble'], 
                        default='ensemble', help='Model type')
     parser.add_argument('--window', type=int, default=252, help='Training window in trading days')
+    parser.add_argument('--retrain', action='store_true', help='Force retraining of models before evaluation')
     
     args = parser.parse_args()
     
-    bt = MLBacktest(model_type=args.model)
+    bt = MLBacktest(model_type=args.model, retrain=args.retrain)
     bt.run(args.start, args.end, train_window=args.window)
 
 

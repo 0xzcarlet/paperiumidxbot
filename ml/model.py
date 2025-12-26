@@ -397,7 +397,5 @@ class EnsembleModel:
         
         if os.path.exists(xgb_path):
             self.xgb_model.load(xgb_path)
-            logger.info(f"XGBoost loaded from {xgb_path}")
         if os.path.exists(sd_path):
             self.sd_model.load(sd_path)
-            logger.info(f"SD Model loaded from {sd_path}")

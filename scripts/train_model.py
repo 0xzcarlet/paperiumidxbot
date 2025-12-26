@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--target', type=float, default=0.80, help='Target effective Win Rate (0.0 to 1.0)')
     parser.add_argument('--force', action='store_true', help='Ignore existing champion metrics')
     parser.add_argument('--max-iter', type=int, default=5, help='Maximum optimization iterations')
+    parser.add_argument('--type', choices=['xgboost', 'gd_sd'], default='xgboost', help='Model type to train')
 
     args = parser.parse_args()
     
@@ -61,7 +62,7 @@ def main():
         iteration += 1
         console.print(f"\n[bold magenta]Iteration {iteration}/{args.max_iter}[/bold magenta]")
         
-        bt = MLBacktest(model_type=args.type)
+        bt = MLBacktest(model_type=args.type, retrain=True)
         if iteration > 1:
             bt.stop_loss_pct = 0.03 + (iteration * 0.005)
             bt.take_profit_pct = 0.06 - (iteration * 0.005)

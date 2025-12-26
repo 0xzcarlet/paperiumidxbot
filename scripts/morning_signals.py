@@ -15,6 +15,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging
+import pandas as pd
+import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Tuple
 from rich.console import Console
@@ -53,28 +55,20 @@ class MorningSignals:
         self.signal_combiner = SignalCombiner(config)
         self.screener = Screener(config)
         
-        # Models: Load both if available
-        self.models = {}
-        from ml.model import TradingModel
-        from ml.supply_demand_model import SupplyDemandModel
+        # Load Ensemble Model (which includes both XGB and SD)
+        from ml.model import EnsembleModel
+        self.ensemble = EnsembleModel(config)
+        self.ensemble.load() # Loads champions by default
         
-        xgb_path = 'models/global_xgb_champion.pkl'
-        if os.path.exists(xgb_path):
-            model = TradingModel(config.ml)
-            model.load(xgb_path)
-            self.models['xgboost'] = model
-            logger.info("✓ Loaded XGBoost Champion")
-            
-        sd_path = 'models/global_sd_champion.pkl'
-        if os.path.exists(sd_path):
-            model = SupplyDemandModel()
-            model.load(sd_path)
-            self.models['gd_sd'] = model
-            logger.info("✓ Loaded GD/SD Champion")
+        # Populate models dict for the individual pipelines
+        self.models = {}
+        if self.ensemble.xgb_model.model is not None:
+            self.models['xgboost'] = self.ensemble.xgb_model
+        if self.ensemble.sd_model.gd_model.weights is not None:
+            self.models['gd_sd'] = self.ensemble.sd_model
             
         if not self.models:
             logger.warning("No champion models found! Using indicators only.")
-
         self.exit_manager = ExitManager(config.exit)
         self.position_sizer = PositionSizer(config.portfolio)
         self.position_manager = PositionManager()
@@ -260,16 +254,17 @@ class MorningSignals:
                         logger.warning(f"Signal calculation failed for {ticker}: {e}")
                 progress.advance(sig_task)
             
-            # Phase 2: ML predictions for each model
+            # Phase 2: ML predictions for 3 different pipelines
             all_model_new_signals = []
             
+            # We evaluate individual models first (XGB, SD)
             for model_name, model in self.models.items():
                 ml_task = progress.add_task(f"Generating {model_name.upper()} predictions...", total=len(data_by_ticker))
                 ml_predictions = {}
                 for ticker, ticker_df in data_by_ticker.items():
                     try:
                         if model_name == 'xgboost':
-                            prob = model.predict_latest(ticker_df)
+                            prob = model.predict_latest(ticker_df)[1] # Get probability
                         else: # gd_sd
                             res = model.predict_latest(ticker_df, ticker)
                             prob = (res['combined_score'] / 2) + 0.5
@@ -282,18 +277,38 @@ class MorningSignals:
                 # Rank and process for this model
                 rankings = self.signal_combiner.rank_stocks(data_by_ticker, ml_predictions)
                 if not rankings.empty:
-                    # Filter and tag
                     model_buys = rankings[
                         (rankings['signal'] == 'BUY') | (rankings['composite_score'] >= MIN_SIGNAL_SCORE)
                     ].copy()
                     model_buys['model_type'] = model_name
                     all_model_new_signals.append(model_buys)
+
+            # Then evaluate Ensemble if both models are available
+            if len(self.models) >= 2:
+                ml_task = progress.add_task("Generating ENSEMBLE predictions...", total=len(data_by_ticker))
+                ml_predictions = {}
+                for ticker, ticker_df in data_by_ticker.items():
+                    try:
+                        res = self.ensemble.predict_latest(ticker_df, ticker)
+                        prob = (res['combined_score'] / 2) + 0.5
+                        ml_predictions[ticker] = pd.Series([prob], index=[ticker_df.index[-1]])
+                    except Exception as e:
+                        logger.debug(f"Ensemble prediction failed for {ticker}: {e}")
+                    progress.advance(ml_task)
+                
+                rankings = self.signal_combiner.rank_stocks(data_by_ticker, ml_predictions)
+                if not rankings.empty:
+                    model_buys = rankings[
+                        (rankings['signal'] == 'BUY') | (rankings['composite_score'] >= MIN_SIGNAL_SCORE)
+                    ].copy()
+                    model_buys['model_type'] = 'ensemble'
+                    all_model_new_signals.append(model_buys)
         
         if not all_model_new_signals:
             return []
             
-        # Combine buy signals from all models
-        buy_signals = pd.concat(all_model_new_signals).sort_values('composite_score', ascending=False)
+        # Combine buy signals from all models (XGB, SD, and Ensemble)
+        buy_signals = pd.concat(all_model_new_signals).sort_values(['composite_score', 'model_type'], ascending=[False, True])
         
         # Debug: Print top 5 candidates for confirmation
         if rankings is not None and not rankings.empty:

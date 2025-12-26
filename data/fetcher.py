@@ -7,6 +7,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 import logging
+import os
+import pickle
+import hashlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,14 +21,18 @@ class DataFetcher:
     Indonesian stocks use .JK suffix (e.g., BBCA.JK for Bank Central Asia)
     """
     
-    def __init__(self, tickers: List[str]):
+    def __init__(self, tickers: List[str], cache_dir: str = ".cache"):
         """
         Initialize fetcher with list of tickers.
         
         Args:
             tickers: List of stock tickers with .JK suffix
+            cache_dir: Directory for caching fetched data
         """
-        self.tickers = tickers
+        self.tickers = sorted(tickers)
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+
     
     def fetch_historical(
         self, 
@@ -150,17 +157,36 @@ class DataFetcher:
         
         start_date = end_date - timedelta(days=days)
         
+        # 1. Caching Logic
+        # Cache key includes dates and hash of tickers to handle universe changes
+        ticker_hash = hashlib.md5("".join(self.tickers).encode()).hexdigest()[:8]
+        # Hourly granularity: captures pre-market vs post-market difference
+        cache_key = f"fetch_{start_date.date()}_{end_date.date()}_{end_date.strftime('%Y%m%d_%H')}_{ticker_hash}.pkl"
+        cache_path = os.path.join(self.cache_dir, cache_key)
+        
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    cached_df = pickle.load(f)
+                logger.info(f"✓ Using cached data from {cache_path} ({len(cached_df)} rows)")
+                return cached_df
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}")
+
+        logger.info(f"Fetching latest market data for {end_date.strftime('%Y-%m-%d %H:%M:%S')}...")
         logger.info(f"Batch fetching {len(self.tickers)} tickers...")
         
         try:
             # Download all at once (more efficient)
+            # Download all at once
+            # Note: threads=True can cause NoneType errors in some environments/versions
             df = yf.download(
                 self.tickers,
                 start=start_date,
                 end=end_date,
                 auto_adjust=True,
                 group_by='ticker',
-                threads=True,
+                threads=False, # Disable threading to fix the NoneType subscriptable error
                 progress=True
             )
             
@@ -179,7 +205,14 @@ class DataFetcher:
                         
                         if len(ticker_df) > 0:
                             ticker_df = ticker_df.reset_index()
-                            ticker_df.columns = ['date', 'close', 'high', 'low', 'open', 'volume']
+                            # Use current column names to avoid mapping errors if structure changes
+                            cols = [c.lower() for c in ticker_df.columns]
+                            ticker_df.columns = cols
+                            
+                            # Standardize names (order might vary)
+                            rename_map = {'price': 'close', 'adj close': 'close'}
+                            ticker_df = ticker_df.rename(columns=rename_map)
+                            
                             ticker_df['ticker'] = ticker
                             ticker_df['date'] = pd.to_datetime(ticker_df['date']).dt.tz_localize(None)
                             records.append(ticker_df)
@@ -190,6 +223,14 @@ class DataFetcher:
                 combined = pd.concat(records, ignore_index=True)
                 # Reorder columns
                 combined = combined[['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']]
+                
+                # Save to cache
+                try:
+                    with open(cache_path, 'wb') as f:
+                        pickle.dump(combined, f)
+                except:
+                    pass
+                    
                 logger.info(f"Batch fetch complete: {len(combined)} total rows")
                 return combined
             

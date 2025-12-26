@@ -103,7 +103,7 @@ class AutoTrainer:
                 console.print(f"\n[bold cyan]Evaluating Model Type: {model_type.upper()}[/bold cyan]")
                 
                 # Step 1: Initialize Backtester
-                bt = MLBacktest(model_type=model_type)
+                bt = MLBacktest(model_type=model_type, retrain=True)
                 
                 # Tuning: Try to hit 80% WR by tightening exits
                 if iteration > 1:
