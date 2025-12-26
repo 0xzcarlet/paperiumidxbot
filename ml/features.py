@@ -1,0 +1,205 @@
+"""
+Feature Engineering Module
+Creates ML features from price data and signals
+"""
+import pandas as pd
+import numpy as np
+from typing import List, Optional, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class FeatureEngineer:
+    """
+    Creates features for machine learning models.
+    Generates price-based, technical, and statistical features.
+    """
+    
+    def __init__(self, config=None):
+        """
+        Initialize feature engineer.
+        
+        Args:
+            config: MLConfig object (optional)
+        """
+        if config:
+            self.feature_lags = config.feature_lags
+        else:
+            self.feature_lags = [1, 2, 3, 5, 10, 20]
+    
+    def create_features(
+        self, 
+        df: pd.DataFrame,
+        target_horizon: int = 1
+    ) -> Tuple[pd.DataFrame, pd.Series]:
+        """
+        Create feature matrix and target variable.
+        
+        Args:
+            df: DataFrame with OHLCV and indicator columns
+            target_horizon: Days ahead to predict (default 1 = next day)
+            
+        Returns:
+            Tuple of (feature DataFrame, target Series)
+        """
+        df = df.copy()
+        
+        # Create target: next-day return
+        df['target'] = df['close'].shift(-target_horizon) / df['close'] - 1
+        df['target_direction'] = (df['target'] > 0).astype(int)
+        
+        # Price-based features
+        df = self._add_price_features(df)
+        
+        # Lagged features
+        df = self._add_lagged_features(df)
+        
+        # Calendar features
+        df = self._add_calendar_features(df)
+        
+        # Drop rows with NaN
+        df = df.dropna()
+        
+        # Get feature columns
+        feature_cols = self._get_feature_columns(df)
+        
+        X = df[feature_cols]
+        y = df['target_direction']
+        
+        return X, y
+    
+    def _add_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add price-based features."""
+        # Returns at various horizons
+        for lag in self.feature_lags:
+            df[f'return_{lag}d'] = df['close'].pct_change(lag)
+        
+        # Log returns
+        df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+        
+        # Volatility
+        df['volatility_5d'] = df['log_return'].rolling(5).std() * np.sqrt(252)
+        df['volatility_20d'] = df['log_return'].rolling(20).std() * np.sqrt(252)
+        df['vol_ratio'] = df['volatility_5d'] / df['volatility_20d'].replace(0, np.inf)
+        
+        # Price relative to moving averages
+        for period in [10, 20, 50]:
+            ma = df['close'].rolling(period).mean()
+            df[f'price_to_ma{period}'] = df['close'] / ma - 1
+        
+        # High-Low range (normalized)
+        df['hl_range'] = (df['high'] - df['low']) / df['close']
+        df['hl_range_avg'] = df['hl_range'].rolling(20).mean()
+        
+        # Gap (overnight return proxy)
+        df['gap'] = df['open'] / df['close'].shift(1) - 1
+        
+        # Close position within day range
+        df['close_position'] = (df['close'] - df['low']) / (df['high'] - df['low']).replace(0, 1)
+        
+        # Volume features
+        df['volume_change'] = df['volume'].pct_change()
+        df['volume_ma20'] = df['volume'].rolling(20).mean()
+        df['relative_volume'] = df['volume'] / df['volume_ma20'].replace(0, 1)
+        
+        return df
+    
+    def _add_lagged_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add lagged versions of key features."""
+        # Lagged returns
+        for lag in [1, 2, 3, 5]:
+            if 'return_1d' in df.columns:
+                df[f'return_lag_{lag}'] = df['return_1d'].shift(lag)
+        
+        # Lagged indicators (if present)
+        if 'rsi' in df.columns:
+            df['rsi_lag1'] = df['rsi'].shift(1)
+            df['rsi_change'] = df['rsi'] - df['rsi'].shift(1)
+        
+        if 'macd_histogram' in df.columns:
+            df['macd_hist_lag1'] = df['macd_histogram'].shift(1)
+            df['macd_hist_change'] = df['macd_histogram'] - df['macd_histogram'].shift(1)
+        
+        if 'zscore' in df.columns:
+            df['zscore_lag1'] = df['zscore'].shift(1)
+            df['zscore_change'] = df['zscore'] - df['zscore'].shift(1)
+        
+        return df
+    
+    def _add_calendar_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add calendar-based features."""
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df['day_of_week'] = df['date'].dt.dayofweek
+            df['month'] = df['date'].dt.month
+            df['is_month_start'] = df['date'].dt.is_month_start.astype(int)
+            df['is_month_end'] = df['date'].dt.is_month_end.astype(int)
+            
+            # One-hot encode day of week
+            for day in range(5):  # Mon-Fri
+                df[f'dow_{day}'] = (df['day_of_week'] == day).astype(int)
+        
+        return df
+    
+    def _get_feature_columns(self, df: pd.DataFrame) -> List[str]:
+        """Get list of feature column names."""
+        # Exclude non-feature columns
+        exclude = {
+            'date', 'ticker', 'open', 'high', 'low', 'close', 'volume',
+            'target', 'target_direction', 'signal', 'composite_score',
+            'score_rank', 'day_of_week', 'month', 'created_at'
+        }
+        
+        feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in ['float64', 'int64', 'int32', 'float32']]
+        
+        return feature_cols
+    
+    def prepare_inference_features(
+        self, 
+        df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Prepare features for inference (without target).
+        
+        Args:
+            df: DataFrame with OHLCV and indicator columns
+            
+        Returns:
+            Feature DataFrame ready for prediction
+        """
+        df = df.copy()
+        
+        df = self._add_price_features(df)
+        df = self._add_lagged_features(df)
+        df = self._add_calendar_features(df)
+        
+        feature_cols = self._get_feature_columns(df)
+        
+        # Fill NaN with 0 for inference
+        X = df[feature_cols].fillna(0)
+        
+        return X
+    
+    def get_feature_importance(
+        self, 
+        model, 
+        feature_names: List[str]
+    ) -> pd.DataFrame:
+        """
+        Get feature importance from trained model.
+        
+        Args:
+            model: Trained model with feature_importances_
+            feature_names: List of feature names
+            
+        Returns:
+            DataFrame with feature importance
+        """
+        importance = pd.DataFrame({
+            'feature': feature_names,
+            'importance': model.feature_importances_
+        })
+        importance = importance.sort_values('importance', ascending=False)
+        
+        return importance
