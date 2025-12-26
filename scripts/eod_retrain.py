@@ -225,13 +225,31 @@ class EODRetraining:
                 if m_type == 'xgboost':
                     from ml.model import TradingModel
                     challenger = TradingModel(config.ml)
-                    metrics = challenger.train(full_df)
+                    # Warm start: load current champion if available
+                    champ_path = os.path.join('models', 'global_xgb_champion.pkl')
+                    if os.path.exists(champ_path):
+                        try:
+                            challenger.load(champ_path)
+                            metrics = challenger.train(full_df, base_model=challenger.model)
+                        except:
+                            metrics = challenger.train(full_df)
+                    else:
+                        metrics = challenger.train(full_df)
                     acc_challenger = metrics.get('cv_accuracy', 0)
                 else:
                     from ml.supply_demand_model import SupplyDemandModel
                     challenger = SupplyDemandModel()
-                    metrics = challenger.train(full_df)
-                    acc_challenger = 0.65 
+                    # Warm start: load current champion if available
+                    champ_path = os.path.join('models', 'global_sd_champion.pkl')
+                    warm_start = False
+                    if os.path.exists(champ_path):
+                        try:
+                            challenger.load(champ_path)
+                            warm_start = True
+                        except:
+                            pass
+                    metrics = challenger.train(full_df, warm_start=warm_start)
+                    acc_challenger = metrics.get('accuracy', 0)
                 
                 current_best = self.trainer.champion_metadata[m_type]['win_rate']
                 if m_type == 'xgboost':

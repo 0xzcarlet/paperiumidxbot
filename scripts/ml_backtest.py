@@ -238,12 +238,32 @@ class MLBacktest:
             try:
                 self.global_xgb = TradingModel(config.ml)
                 self.global_xgb.feature_names = X_combined.columns.tolist()
+                
+                # Warm Start: Try to load existing champion
+                xgb_champ_path = os.path.join("models", "global_xgb_champion.pkl")
+                base_model = None
+                if os.path.exists(xgb_champ_path):
+                    try:
+                        temp_xgb = TradingModel(config.ml)
+                        temp_xgb.load(xgb_champ_path)
+                        if temp_xgb.model is not None:
+                            base_model = temp_xgb.model
+                            console.print(f"  → Loaded XGB champion for Warm Start")
+                    except Exception as load_err:
+                        console.print(f"  [yellow]→ Could not load XGB champion for warm start: {load_err}[/yellow]")
+
                 self.global_xgb.model = self.global_xgb._create_model()
                 # Remove deprecated param
                 if 'use_label_encoder' in self.global_xgb.model.get_params():
                     self.global_xgb.model.set_params(use_label_encoder=False)
                 
-                self.global_xgb.model.fit(X_combined, y_combined)
+                if base_model is not None:
+                    # Incremental learning
+                    self.global_xgb.model.fit(X_combined, y_combined, xgb_model=base_model.get_booster())
+                else:
+                    # Fresh training
+                    self.global_xgb.model.fit(X_combined, y_combined)
+                    
                 console.print("  ✓ Trained Global XGBoost model")
             except Exception as e:
                 console.print(f"  [red]✗[/red] Global XGBoost training failed: {e}")
@@ -253,6 +273,20 @@ class MLBacktest:
         if self.model_type in ['gd_sd', 'ensemble']:
             try:
                 self.global_sd = SupplyDemandModel()
+                
+                # Warm Start: Try to load existing champion
+                sd_champ_path = os.path.join("models", "global_sd_champion.pkl")
+                if os.path.exists(sd_champ_path):
+                    try:
+                        self.global_sd.load(sd_champ_path)
+                        console.print(f"  → Loaded SD champion for Warm Start")
+                        warm_start = True
+                    except Exception as load_err:
+                        console.print(f"  [yellow]→ Could not load SD champion for warm start: {load_err}[/yellow]")
+                        warm_start = False
+                else:
+                    warm_start = False
+
                 # Pool raw data for GD model
                 raw_train_pooled = []
                 for ticker in all_data['ticker'].unique():
@@ -264,7 +298,7 @@ class MLBacktest:
                 
                 if raw_train_pooled:
                     combined_raw = pd.concat(raw_train_pooled)
-                    self.global_sd.train(combined_raw)
+                    self.global_sd.train(combined_raw, warm_start=warm_start)
                     console.print("  ✓ Trained Global GD+S/D model")
             except Exception as e:
                 console.print(f"  [red]✗[/red] Global GD+S/D training failed: {e}")

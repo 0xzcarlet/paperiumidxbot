@@ -72,7 +72,8 @@ class TradingModel:
     def train(
         self, 
         df: pd.DataFrame,
-        validate: bool = True
+        validate: bool = True,
+        base_model: Optional[xgb.XGBClassifier] = None
     ) -> Dict[str, float]:
         """
         Train the model on historical data.
@@ -80,11 +81,17 @@ class TradingModel:
         Args:
             df: DataFrame with OHLCV and indicator columns
             validate: Whether to perform validation
+            base_model: Existing model to use as starting point (warm start)
             
         Returns:
             Dictionary of training metrics
         """
-        logger.info("Training ML model...")
+        if base_model is not None:
+            logger.info("Retraining existing champion (Warm Start)...")
+            self.model = base_model
+            # Ensure feature names match if possible, or we'll error out during fit
+        else:
+            logger.info("Training fresh ML model...")
         
         # Create features
         X, y = self.feature_engineer.create_features(df)
@@ -105,8 +112,14 @@ class TradingModel:
         self.feature_names = X_train.columns.tolist()
         
         # Train model
-        self.model = self._create_model()
-        self.model.fit(X_train, y_train)
+        if base_model is None:
+            self.model = self._create_model()
+            self.model.fit(X_train, y_train)
+        else:
+            # Incremental learning: pass booster to xgb_model
+            # Note: Feature set must be identical
+            self.model.fit(X_train, y_train, xgb_model=base_model.get_booster())
+            
         self.last_trained = datetime.now()
         
         metrics = {
@@ -314,16 +327,19 @@ class EnsembleModel:
         self.sd_model = SupplyDemandModel()
         self.model_dir = model_dir
         
-    def train(self, df: pd.DataFrame) -> Dict[str, float]:
+    def train(self, df: pd.DataFrame, warm_start: bool = False) -> Dict[str, float]:
         """
         Train ensemble models using pooled data.
         Note: The backtest showed global pooling is superior.
         """
         # XGBoost training
-        xgb_metrics = self.xgb_model.train(df)
+        xgb_metrics = self.xgb_model.train(
+            df, 
+            base_model=self.xgb_model.model if warm_start else None
+        )
         
         # SD (Gradient Descent) training
-        sd_metrics = self.sd_model.train(df)
+        sd_metrics = self.sd_model.train(df, warm_start=warm_start)
         
         return {
             'xgb_trained': self.xgb_model.model is not None,

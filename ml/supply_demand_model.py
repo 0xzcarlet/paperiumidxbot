@@ -276,12 +276,13 @@ class GradientDescentModel:
         """Sigmoid activation function."""
         return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
     
-    def fit(self, df: pd.DataFrame) -> Dict:
+    def fit(self, df: pd.DataFrame, warm_start: bool = False) -> Dict:
         """
         Train the model using gradient descent.
         
         Args:
             df: Price data DataFrame
+            warm_start: Whether to keep existing weights as starting point
             
         Returns:
             Training metrics
@@ -310,10 +311,13 @@ class GradientDescentModel:
         
         X = (X - self.feature_mean) / self.feature_std
         
-        # Initialize weights
+        # Initialize weights if not warm starting or if they don't exist
         n_features = X.shape[1]
-        self.weights = np.random.randn(n_features) * 0.01
-        self.bias = 0.0
+        if not warm_start or self.weights is None:
+            self.weights = np.random.randn(n_features) * 0.01
+            self.bias = 0.0
+        else:
+            logger.info("Retraining existing GD weights (Warm Start)...")
         
         # Gradient descent
         n_samples = len(X)
@@ -431,9 +435,9 @@ class SupplyDemandModel:
         self.gd_weight = 0.6
         self.sd_weight = 0.4
     
-    def train(self, df: pd.DataFrame) -> Dict:
+    def train(self, df: pd.DataFrame, warm_start: bool = False) -> Dict:
         """Train the gradient descent component."""
-        return self.gd_model.fit(df)
+        return self.gd_model.fit(df, warm_start=warm_start)
     
     def predict(self, df: pd.DataFrame, ticker: str = "default") -> pd.DataFrame:
         """
