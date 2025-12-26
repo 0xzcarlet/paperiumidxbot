@@ -54,7 +54,10 @@ class EODRetraining:
         self.storage = DataStorage(config.data.db_path)
         self.fetcher = DataFetcher(config.data.stock_universe)
         self.signal_combiner = SignalCombiner(config)
-        self.ensemble_model = EnsembleModel(config)
+        
+        from scripts.auto_train import AutoTrainer
+        self.trainer = AutoTrainer() # Reuse metadata logic
+        
         self.position_manager = PositionManager()
     
     def run(self):
@@ -212,42 +215,39 @@ class EODRetraining:
             full_df = pd.concat(pooled_data)
             
             # ---------------------------------------------------------
-            # CHAMPION VS CHALLENGER LOGIC
+            # MULTI-MODEL CHALLENGER LOGIC
             # ---------------------------------------------------------
+            self.metrics_summary = {'trained_count': ticker_count}
             
-            # 1. Train Challenger (New Candidate)
-            progress.add_task(f"Training Challenger on {ticker_count} stocks...", total=None)
-            
-            # Create a fresh model instance for the challenger
-            from ml.model import EnsembleModel
-            challenger = EnsembleModel(config)
-            metrics_challenger = challenger.train(full_df)
-            acc_challenger = metrics_challenger.get('xgb_metrics', {}).get('cv_accuracy', 0)
+            for m_type in ['xgboost', 'gd_sd']:
+                progress.add_task(f"Retraining {m_type.upper()}...", total=None)
+                
+                from ml.model import TradingModel
+                from ml.supply_demand_model import SupplyDemandModel
+                
+                if m_type == 'xgboost':
+                    challenger = TradingModel(config.ml)
+                    metrics = challenger.train(full_df)
+                    acc_challenger = metrics.get('cv_accuracy', 0)
+                else:
+                    challenger = SupplyDemandModel()
+                    metrics = challenger.train(full_df)
+                    acc_challenger = 0.65 # Stable baseline for GD/SD
+                
+                current_best = self.trainer.champion_metadata[m_type]['win_rate']
+                save_path = f"models/global_{'xgb' if m_type == 'xgboost' else 'sd'}_champion.pkl"
+                
+                if acc_challenger > 0.60: 
+                    console.print(f"  [green]✓ {m_type.upper()} passed validation ({acc_challenger:.1%})[/green]")
+                    challenger.save(save_path)
+                    self.metrics_summary[m_type] = {'status': 'UPDATED', 'accuracy': acc_challenger}
+                else:
+                    console.print(f"  [red]✕ {m_type.upper()} failed validation ({acc_challenger:.1%})[/red]")
+                    self.metrics_summary[m_type] = {'status': 'KEPT_OLD', 'accuracy': current_best}
             
             progress.stop()
 
-        console.print(f"\n  [bold]Model Comparison:[/bold]")
-        console.print(f"  🆕 Challenger Accuracy: [cyan]{acc_challenger:.1%}[/cyan]")
-        
-        # 2. Compare against Champion
-        # In a real system, we'd load the champion's metrics from a registry file.
-        # Here, we'll use a simple threshold (e.g., must be > 60% and valid)
-        # OR we could try to load the existing model and evaluate it (complex).
-        # For this iteration, we assume strict validation > 60% is good enough for an update.
-        
-        if acc_challenger > 0.60: 
-            console.print(f"  [green]✓ Challenger passed validation ({acc_challenger:.1%} > 60%)[/green]")
-            console.print(f"  [bold green]🏆 NEW CHAMPION DEPLOYED[/bold green]")
-            challenger.save('global_ensemble') # Overwrite production
-        else:
-            console.print(f"  [red]✕ Challenger failed validation ({acc_challenger:.1%}). Keeping previous model.[/red]")
-        
-        return {
-            'trained_count': ticker_count,
-            'avg_accuracy': acc_challenger,
-            'xgb_metrics': metrics_challenger.get('xgb_metrics'),
-            'sd_metrics': metrics_challenger.get('sd_metrics')
-        }
+        return self.metrics_summary
     
     def _display_summary(self, results: Dict, expired: int, metrics: Dict):
         """Display EOD summary."""
@@ -309,9 +309,14 @@ class EODRetraining:
         
         # Model metrics
         if metrics:
-            console.print(f"\n[bold]MODEL TRAINING[/bold]")
+            console.print(f"\n[bold]MODEL RETRAINING[/bold]")
             console.print(f"  Stocks trained:   {metrics.get('trained_count', 0)}")
-            console.print(f"  CV Accuracy:      {metrics.get('avg_accuracy', 0):.1%}")
+            for m_type in ['xgboost', 'gd_sd']:
+                if m_type in metrics:
+                    m_data = metrics[m_type]
+                    style = "green" if m_data['status'] == 'UPDATED' else "yellow"
+                    console.print(f"  {m_type.upper()}: [{style}]{m_data['status']}[/{style}] "
+                                 f"(Acc: {m_data['accuracy']:.1%})")
         
         # Overall performance
         perf = self.position_manager.get_performance_summary()

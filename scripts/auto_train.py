@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,42 +25,68 @@ console = Console()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TARGET_WIN_RATE = 0.80
-TARGET_MONTHLY_RETURN = 0.15 # 15% monthly = ~200% annual compounded aggressively
+import json
+from rich.progress import Progress
 
-def is_conservative_day():
-    """
-    Check if today is a conservative trading day (Friday or before holiday)
-    User Request: "parameter related to human psychology" - fear of holding over weekend
-    """
-    today = datetime.now()
-    
-    # 0=Monday, 4=Friday, 5=Saturday, 6=Sunday
-    if today.weekday() == 4: # Friday
-        return True
-        
-    # TODO: Add holiday calendar check here
-    
-    return False
+TARGET_WIN_RATE = 0.80
+MIN_SAVE_THRESHOLD = 0.60    # Save the model if it's at least viable
+TARGET_MONTHLY_RETURN = 0.15 # 15% monthly = ~200% annual compounded aggressively
+METADATA_PATH = 'models/champion_metadata.json'
 
 class AutoTrainer:
     def __init__(self):
-        self.best_model_metrics = {'win_rate': 0.0, 'total_return': 0.0}
         self.storage = DataStorage(config.data.db_path)
+        self.champion_metadata = self._load_metadata()
         
+    def _load_metadata(self) -> Dict:
+        """Load tracking of current best models."""
+        if os.path.exists(METADATA_PATH):
+            try:
+                with open(METADATA_PATH, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {
+            'xgboost': {'win_rate': 0.0, 'date': None},
+            'gd_sd': {'win_rate': 0.0, 'date': None}
+        }
+
+    def _save_metadata(self):
+        """Save tracking of current best models."""
+        os.makedirs('models', exist_ok=True)
+        with open(METADATA_PATH, 'w') as f:
+            json.dump(self.champion_metadata, f, indent=4)
+
     def run_optimization_loop(self):
-        """Run the rigorous Train -> Backtest -> Verify loop"""
-        console.print("[bold cyan]Starting Auto-Training Optimization Loop[/bold cyan]")
-        console.print(f"Target Win Rate: [green]{TARGET_WIN_RATE:.0%}[/green]")
+        """Run the rigorous Train -> Backtest -> Verify loop (Optimized)"""
+        console.print("[bold cyan]Starting Optimized Auto-Training Loop[/bold cyan]")
+        console.print(f"Current XGB Champion: [green]{self.champion_metadata['xgboost']['win_rate']:.1%}[/green]")
+        console.print(f"Current GD/SD Champion: [green]{self.champion_metadata['gd_sd']['win_rate']:.1%}[/green]")
         
-        # Ensure data is ready (at least some)
-        all_data = self.storage.get_prices()
-        if all_data.empty or len(all_data) < 1000:
-            console.print("[yellow]Insufficient data in DB. Running initial fetch...[/yellow]")
-            fetcher = DataFetcher(config.data.stock_universe)
-            data = fetcher.fetch_batch(days=730) # 2 years
-            self.storage.upsert_prices(data)
-            all_data = self.storage.get_prices()
+        # Step 0: Initial Data Loading & Feature Calculation (LOAD ONCE)
+        console.print("\n[yellow]⏳ Phase 0: One-time Data Preparation...[/yellow]")
+        backtester = MLBacktest()
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        
+        all_data = backtester._load_data(start_date, end_date, train_window=252)
+        if all_data.empty:
+            console.print("[red]No data available[/red]")
+            return
+
+        # Pre-calculating features once
+        ticker_groups = all_data.groupby('ticker')
+        processed_data_list = []
+        with Progress(console=console) as progress:
+            task = progress.add_task("[cyan]Pre-calculating features...", total=all_data['ticker'].nunique())
+            for ticker, group in ticker_groups:
+                group = group.sort_values('date')
+                group = backtester._add_features(group)
+                processed_data_list.append(group)
+                progress.update(task, advance=1)
+        
+        featured_data = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
+        console.print(f"  ✓ Features calculated for {len(featured_data)} records")
 
         iteration = 0
         all_results = []
@@ -71,63 +98,61 @@ class AutoTrainer:
             for model_type in ['xgboost', 'gd_sd']:
                 console.print(f"\n[bold cyan]Evaluating Model Type: {model_type.upper()}[/bold cyan]")
                 
-                # Step 1: Initialize Backtester for specific model
-                backtester = MLBacktest(model_type=model_type)
+                # Step 1: Initialize Backtester
+                bt = MLBacktest(model_type=model_type)
                 
                 # Tuning: Try to hit 80% WR by tightening exits
                 if iteration > 1:
-                    backtester.stop_loss_pct = 0.03 + (iteration * 0.005)
-                    backtester.take_profit_pct = 0.06 - (iteration * 0.005)
+                    bt.stop_loss_pct = 0.03 + (iteration * 0.005)
+                    bt.take_profit_pct = 0.06 - (iteration * 0.005)
                 
-                # Step 2: Run Backtest
-                end_date = datetime.now().strftime('%Y-%m-%d')
-                start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-                
-                results = backtester.run(start_date=start_date, end_date=end_date, train_window=252)
+                # Step 2: Run Backtest with Pre-loaded Data
+                results = bt.run(start_date=start_date, end_date=end_date, train_window=252, pre_loaded_data=featured_data)
                 
                 if results and 'win_rate' in results:
-                    # Calculate effective Win Rate from monthly metrics
                     monthly_wrs = [m['win_rate'] / 100.0 for m in results.get('monthly_metrics', [])]
-                    if monthly_wrs:
-                        avg_wr = sum(monthly_wrs) / len(monthly_wrs)
-                        min_wr = min(monthly_wrs)
-                        effective_wr = (avg_wr * 0.7) + (min_wr * 0.3)
-                    else:
-                        effective_wr = results['win_rate'] / 100.0
+                    effective_wr = (sum(monthly_wrs) / len(monthly_wrs) * 0.7) + (min(monthly_wrs) * 0.3) if monthly_wrs else results['win_rate'] / 100.0
                     
                     ret = results['total_return'] / 100.0
-                    
                     console.print(f"  [bold]{model_type.upper()} Results:[/bold] Effective WR: {effective_wr:.1%} | Total Return: {ret:.1%}")
                     iter_summary[model_type] = effective_wr
                     
+                    # Champion Comparison Logic
+                    current_best_wr = self.champion_metadata[model_type]['win_rate']
+                    save_path = f"models/global_{'xgb' if model_type == 'xgboost' else 'sd'}_champion.pkl"
+                    
+                    if effective_wr > current_best_wr or not os.path.exists(save_path):
+                        improvement = (effective_wr - current_best_wr) if current_best_wr > 0 else effective_wr
+                        console.print(f"  [bold green]🚀 Improved Performance! (+{improvement:.1%})[/bold green]")
+                        
+                        if model_type == 'xgboost':
+                            bt.global_xgb.save(save_path)
+                        else:
+                            bt.global_sd.save(save_path)
+                            
+                        self.champion_metadata[model_type] = {
+                            'win_rate': effective_wr,
+                            'total_return': ret,
+                            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'iteration': iteration
+                        }
+                        self._save_metadata()
+                    else:
+                        console.print(f"  [dim]No improvement over current champion ({current_best_wr:.1%}). Not saving.[/dim]")
+
                     if effective_wr >= TARGET_WIN_RATE:
                         console.print(f"[bold green]🏆 {model_type.upper()} TARGET REACHED![/bold green]")
-                        # Save specifically as champion in models/ directory
-                        model_dir = 'models'
-                        os.makedirs(model_dir, exist_ok=True)
-                        if model_type == 'xgboost':
-                            save_path = os.path.join(model_dir, 'global_xgb_champion.pkl')
-                            backtester.global_xgb.save(save_path)
-                        else:
-                            save_path = os.path.join(model_dir, 'global_sd_champion.pkl')
-                            backtester.global_sd.save(save_path)
                 else:
                     console.print(f"[red]Backtest failed for {model_type}.[/red]")
             
             all_results.append(iter_summary)
-            
-            # Check if any model met target in this iteration
             if any(wr >= TARGET_WIN_RATE for wr in iter_summary.values()):
                 console.print("\n[bold green]One or more models have reached the target performance![/bold green]")
-                # We stop iteration if at least one model is stable at 80%+
                 break
 
             if iteration >= 5:
-                console.print("[yellow]Reached max iterations without hitting perfect 80% target.[/yellow]")
                 break
-                
-            console.print("  [dim]Tuning parameters for next round...[/dim]")
-            time.sleep(2)
+            time.sleep(1)
 
 if __name__ == "__main__":
     trainer = AutoTrainer()

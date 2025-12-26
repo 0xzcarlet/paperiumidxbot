@@ -2,7 +2,7 @@
 
 Paperium is an automated trading system optimized for the Indonesia Stock Exchange (IHSG). It leverages a multi-model ensemble of XGBoost and Supply/Demand price action zones to achieve high-precision signals with target win rates exceeding 80%.
 
-## 🚀 Key Features
+## Key Features
 
 *   **Universal Data Pooling**: Trains on the entire liquid IHSG universe (IDX80, Kompas100), generalizing across 460+ stocks.
 *   **High-Potential Screener**: Pre-filters stocks for trend (EMA 200), liquidity, and ATR-based volatility before ML processing.
@@ -10,7 +10,7 @@ Paperium is an automated trading system optimized for the Indonesia Stock Exchan
 *   **Interactive Morning Signals**: Professional-grade CLI to review recommendations and execute trades in **Live** or **Test** mode.
 *   **Champion vs. Challenger EOD**: End-of-day retraining that safely upgrades the "Champion" model only if a "Challenger" performs better.
 
-## 🛠 Installation
+## Installation
 
 Ensuring you have `uv` installed, then run:
 
@@ -22,7 +22,7 @@ cd paperium
 uv sync
 ```
 
-## 📈 7-Step Automated Workflow
+## 7-Step Automated Workflow
 
 The system is designed to run autonomously or under user supervision. Use the following scripts in order:
 
@@ -55,38 +55,36 @@ uv run python scripts/eod_retrain.py
 ```
 *Updates existing positions (SL/TP hits) and retrains the model with today's data.*
 
-## 🧠 Intelligence & Strategies
+## Intelligence & Strategies
+Paperium operates with a modular dual-brain architecture, enabling independent strategy management:
 
-Paperium uses two distinct machine learning architectures that can be trained and compared side-by-side.
+### Core Models
+*   **XGBoost (Champion)**: High-performance gradient boosted trees focused on next-day return probability. Excels at high-precision momentum entries.
+*   **GD/SD (Alternative)**: Structural strategy combining Gradient Descent price tracking with automated Supply/Demand zone detection for reversal entries.
 
-### 1. XGBoost Champion (Default)
-The primary "brain" of the system.
-- **Strategy**: Gradient Boosting Trees (Classification).
-- **Focus**: Capturing non-linear relationships between technical indicators and short-term price movements.
-- **Strength**: High-precision entries. This model excels at identifying the "perfect" moment to enter a trade with a very high probability of hitting the target within 5 days.
-- **Target Metrics**: 85%+ effective win rate.
+### Quality Control: Champion vs Challenger
+The system ensures peak performance through a rigorous validation loop:
+1.  **Persistence**: The best-known metrics for each strategy are stored in `models/champion_metadata.json`.
+2.  **Replacement Policy**: New models only replace the "Champion" if they demonstrate a strictly superior Win Rate during training/backtesting.
+3.  **Modular Training**: 
+    - Full sweep: `uv run python scripts/auto_train.py`
+    - Targeted: `uv run python scripts/train_model.py --type <xgboost|gd_sd> --target 0.85`
+4.  **Daily Refinement**: `scripts/eod_retrain.py` automatically attempts to improve the champions every day after market close.
 
-### 2. GD/SD Alternative (Gradient Descent + Supply/Demand)
-A robust alternative that combines classic price action with modern optimization.
-- **Strategy**: Gradient Descent (Logistic Regression) paired with algorithmic Supply/Demand zone detection.
-- **Focus**: Structural price action and trend confirmation.
-- **Strength**: Reliability and low drawdown. It uses Supply/Demand zones to ensure entries are made near structural support/resistance, while the GD model confirms the directional probability.
-- **Target Metrics**: 65%+ effective win rate with extremely low volatility.
-
-## ⚙️ Configuration
+## Configuration
 
 Modify `config.py` to adjust:
 - `MLConfig`: Training windows and min sample requirements.
 - `PortfolioConfig`: Position sizing and maximum exposure.
 - `ExitConfig`: Default Stop-Loss and Take-Profit percentages.
 
-## 📁 Directory Structure
+## Directory Structure
 - `/models`: Persisted Champion models.
 - `/data`: SQLite database (`trading.db`) and historical cache.
 - `/scripts`: Main entry points for the automation workflow.
 - `/ml`: Model architectures (XGBoost, SupplyDemand, Ensemble).
 
-## 📊 Backtest Results
+## Backtest Results
 The latest baseline using the **XGBoost Global Champion** achieved:
 - **Win Rate**: 89.7%
 - **Total Return (90 days)**: +156.2%

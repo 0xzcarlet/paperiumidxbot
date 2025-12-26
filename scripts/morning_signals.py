@@ -52,12 +52,29 @@ class MorningSignals:
         self.fetcher = DataFetcher(config.data.stock_universe)
         self.signal_combiner = SignalCombiner(config)
         self.screener = Screener(config)
-        self.ensemble_model = EnsembleModel(config)
-        # Load global model if available
-        try:
-            self.ensemble_model.load('global_ensemble')
-        except:
-            logger.warning("Global ensemble model not found, using indicators only")
+        
+        # Models: Load both if available
+        self.models = {}
+        from ml.model import TradingModel
+        from ml.supply_demand_model import SupplyDemandModel
+        
+        xgb_path = 'models/global_xgb_champion.pkl'
+        if os.path.exists(xgb_path):
+            model = TradingModel(config.ml)
+            model.load(xgb_path)
+            self.models['xgboost'] = model
+            logger.info("✓ Loaded XGBoost Champion")
+            
+        sd_path = 'models/global_sd_champion.pkl'
+        if os.path.exists(sd_path):
+            model = SupplyDemandModel()
+            model.load(sd_path)
+            self.models['gd_sd'] = model
+            logger.info("✓ Loaded GD/SD Champion")
+            
+        if not self.models:
+            logger.warning("No champion models found! Using indicators only.")
+
         self.exit_manager = ExitManager(config.exit)
         self.position_sizer = PositionSizer(config.portfolio)
         self.position_manager = PositionManager()
@@ -243,28 +260,40 @@ class MorningSignals:
                         logger.warning(f"Signal calculation failed for {ticker}: {e}")
                 progress.advance(sig_task)
             
-            # Phase 2: ML predictions
-            ml_task = progress.add_task("Generating ML ensemble predictions...", total=len(data_by_ticker))
-            for ticker, ticker_df in data_by_ticker.items():
-                try:
-                    res = self.ensemble_model.predict_latest(ticker_df, ticker)
-                    prob = (res['combined_score'] / 2) + 0.5
-                    ml_predictions[ticker] = pd.Series([prob], index=[ticker_df.index[-1]])
-                except Exception as e:
-                    logger.debug(f"ML prediction failed for {ticker}: {e}")
-                progress.advance(ml_task)
+            # Phase 2: ML predictions for each model
+            all_model_new_signals = []
+            
+            for model_name, model in self.models.items():
+                ml_task = progress.add_task(f"Generating {model_name.upper()} predictions...", total=len(data_by_ticker))
+                ml_predictions = {}
+                for ticker, ticker_df in data_by_ticker.items():
+                    try:
+                        if model_name == 'xgboost':
+                            prob = model.predict_latest(ticker_df)
+                        else:
+                            res = model.predict_latest(ticker_df, ticker)
+                            prob = (res['combined_score'] / 2) + 0.5
+                            
+                        ml_predictions[ticker] = pd.Series([prob], index=[ticker_df.index[-1]])
+                    except Exception as e:
+                        logger.debug(f"{model_name} prediction failed for {ticker}: {e}")
+                    progress.advance(ml_task)
+                
+                # Rank and process for this model
+                rankings = self.signal_combiner.rank_stocks(data_by_ticker, ml_predictions)
+                if not rankings.empty:
+                    # Filter and tag
+                    model_buys = rankings[
+                        (rankings['signal'] == 'BUY') | (rankings['composite_score'] >= MIN_SIGNAL_SCORE)
+                    ].copy()
+                    model_buys['model_type'] = model_name
+                    all_model_new_signals.append(model_buys)
         
-        # Rank stocks with ML enhancement
-        rankings = self.signal_combiner.rank_stocks(data_by_ticker, ml_predictions)
-        
-        if rankings.empty:
+        if not all_model_new_signals:
             return []
-        
-        # Filter for buy signals above threshold
-        buy_signals = rankings[
-            (rankings['signal'] == 'BUY') |  # Keep BUY label
-            (rankings['composite_score'] >= MIN_SIGNAL_SCORE)
-        ].copy()
+            
+        # Combine buy signals from all models
+        buy_signals = pd.concat(all_model_new_signals).sort_values('composite_score', ascending=False)
         
         # Debug: Print top 5 candidates for confirmation
         if rankings is not None and not rankings.empty:
@@ -273,15 +302,13 @@ class MorningSignals:
                 conf_pct = row['composite_score'] * 100
                 console.print(f"  [dim]{row['ticker']}: {conf_pct:.1f}%[/dim]")
         
-        # Exclude stocks already in portfolio
-        existing_tickers = set(existing_positions.keys())
-        buy_signals = buy_signals[~buy_signals['ticker'].isin(existing_tickers)]
-        
-        # Apply sector diversification
+        # Exclude stocks already in portfolio (by SAME model)
+        # Allows different models to potentially hold same stock if they both agree
         new_signals = []
         sector_count = {}
         max_per_sector = 3
-        max_new_positions = 10 - len(existing_positions)
+        max_total_positions = 15 # Increased for multi-model
+        max_new_positions = max_total_positions - len(existing_positions)
         
         for _, row in buy_signals.iterrows():
             if len(new_signals) >= max_new_positions:
@@ -330,6 +357,7 @@ class MorningSignals:
                 'ticker': ticker,
                 'sector': sector,
                 'score': score,
+                'model_type': row['model_type'],
                 'order_type': order_type,
                 'entry_price': round(entry_price, 0),
                 'limit_price': round(limit_price, 0) if limit_price else None,
@@ -387,6 +415,7 @@ class MorningSignals:
         table = Table(box=box.ROUNDED)
         table.add_column("#", justify="right", style="dim")
         table.add_column("Ticker", style="cyan bold")
+        table.add_column("Model", justify="center", style="blue")
         table.add_column("Type", justify="center")
         table.add_column("Conf %", justify="right", style="magenta")
         table.add_column("Entry", justify="right")
@@ -404,6 +433,7 @@ class MorningSignals:
             table.add_row(
                 str(i),
                 sig['ticker'].replace('.JK', ''),
+                sig['model_type'].upper(),
                 f"[{order_style}]{sig['order_type']}[/{order_style}]",
                 f"{conf_pct:.1f}%",
                 f"{sig['entry_price']:,.0f}",
@@ -433,6 +463,7 @@ class MorningSignals:
             position = Position(
                 ticker=sig['ticker'],
                 order_type=sig['order_type'],
+                model_type=sig['model_type'],
                 entry_price=sig['entry_price'],
                 limit_price=sig['limit_price'],
                 stop_loss=sig['stop_loss'],

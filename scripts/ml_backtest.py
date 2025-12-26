@@ -66,7 +66,7 @@ class MLBacktest:
         self.global_xgb = None
         self.global_sd = None
     
-    def run(self, start_date: str, end_date: str, train_window: int = 252):
+    def run(self, start_date: str, end_date: str, train_window: int = 252, pre_loaded_data: Optional[pd.DataFrame] = None):
         """
         Run ML backtest with walk-forward optimization.
         
@@ -74,6 +74,7 @@ class MLBacktest:
             start_date: Backtest start date
             end_date: Backtest end date  
             train_window: Training window in days
+            pre_loaded_data: Optional pre-featured data to speed up iterations
         """
         console.print(Panel.fit(
             f"[bold blue]IHSG ML Backtest[/bold blue]\n"
@@ -83,8 +84,12 @@ class MLBacktest:
         ))
         
         # Load data
-        console.print("\n[yellow]Loading data...[/yellow]")
-        all_data = self._load_data(start_date, end_date, train_window)
+        if pre_loaded_data is not None:
+            console.print("\n[yellow]Using pre-loaded featured data...[/yellow]")
+            all_data = pre_loaded_data
+        else:
+            console.print("\n[yellow]Loading data...[/yellow]")
+            all_data = self._load_data(start_date, end_date, train_window)
         
         if all_data.empty:
             console.print("[red]No data available[/red]")
@@ -103,7 +108,7 @@ class MLBacktest:
                 
             # Run simulation
             console.print("[yellow]Running simulation...[/yellow]")
-            results = self._simulate(all_data, start_date, end_date)
+            results = self._simulate(all_data, start_date, end_date, is_pre_featured=(pre_loaded_data is not None))
             
             # Display results
             self._display_results(results)
@@ -295,25 +300,28 @@ class MLBacktest:
         
         return np.mean(scores)
     
-    def _simulate(self, all_data: pd.DataFrame, start_date: str, end_date: str) -> Dict:
+    def _simulate(self, all_data: pd.DataFrame, start_date: str, end_date: str, is_pre_featured: bool = False) -> Dict:
         """Run simulation with pre-calculated features for speed."""
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)
         
-        # Pre-calculate features for all tickers
-        console.print("[yellow]Pre-calculating features for all tickers...[/yellow]")
-        ticker_groups = all_data.groupby('ticker')
-        processed_data_list = []
-        
-        with Progress(console=console) as progress:
-            task = progress.add_task("[cyan]Processing tickers...", total=all_data['ticker'].nunique())
-            for ticker, group in ticker_groups:
-                group = group.sort_values('date')
-                group = self._add_features(group)
-                processed_data_list.append(group)
-                progress.update(task, advance=1)
-        
-        all_data_feat = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
+        if not is_pre_featured:
+            # Pre-calculate features for all tickers
+            console.print("[yellow]Pre-calculating features for all tickers...[/yellow]")
+            ticker_groups = all_data.groupby('ticker')
+            processed_data_list = []
+            
+            with Progress(console=console) as progress:
+                task = progress.add_task("[cyan]Processing tickers...", total=all_data['ticker'].nunique())
+                for ticker, group in ticker_groups:
+                    group = group.sort_values('date')
+                    group = self._add_features(group)
+                    processed_data_list.append(group)
+                    progress.update(task, advance=1)
+            
+            all_data_feat = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
+        else:
+            all_data_feat = all_data
         
         # Create a map for quick lookup of a ticker's full processed data
         ticker_data_map = {ticker: group.set_index('date') for ticker, group in all_data_feat.groupby('ticker')}
