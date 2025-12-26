@@ -21,7 +21,8 @@ console = Console()
 
 def main():
     parser = argparse.ArgumentParser(description='Targeted Model Training')
-    parser.add_argument('--type', choices=['xgboost', 'gd_sd'], required=True, help='Model type to train')
+    parser.add_argument('--days', type=int, default=90, help='Evaluation period in calendar days (backtest window)')
+    parser.add_argument('--train-window', type=int, default=252, help='Training window in trading days (default: 252 - 1 year)')
     parser.add_argument('--target', type=float, default=0.80, help='Target effective Win Rate (0.0 to 1.0)')
     parser.add_argument('--force', action='store_true', help='Ignore existing champion metrics')
     parser.add_argument('--max-iter', type=int, default=5, help='Maximum optimization iterations')
@@ -39,9 +40,9 @@ def main():
     # Phase 0: Data Prep
     backtester = MLBacktest()
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=args.days)).strftime('%Y-%m-%d')
     
-    all_data = backtester._load_data(start_date, end_date, train_window=252)
+    all_data = backtester._load_data(start_date, end_date, train_window=args.train_window)
     if all_data.empty:
         console.print("[red]No data available[/red]")
         return
@@ -65,7 +66,7 @@ def main():
             bt.stop_loss_pct = 0.03 + (iteration * 0.005)
             bt.take_profit_pct = 0.06 - (iteration * 0.005)
             
-        results = bt.run(start_date=start_date, end_date=end_date, train_window=252, pre_loaded_data=featured_data)
+        results = bt.run(start_date=start_date, end_date=end_date, train_window=args.train_window, pre_loaded_data=featured_data)
         
         if results and 'win_rate' in results:
             monthly_wrs = [m['win_rate'] / 100.0 for m in results.get('monthly_metrics', [])]

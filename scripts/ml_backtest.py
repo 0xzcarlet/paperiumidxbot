@@ -709,11 +709,12 @@ def main():
     parser.add_argument('--end', default='2025-09-30', help='End date')
     parser.add_argument('--model', choices=['xgboost', 'gd_sd', 'ensemble'], 
                        default='ensemble', help='Model type')
+    parser.add_argument('--window', type=int, default=252, help='Training window in trading days')
     
     args = parser.parse_args()
     
     bt = MLBacktest(model_type=args.model)
-    bt.run(args.start, args.end)
+    bt.run(args.start, args.end, train_window=args.window)
 
 
 if __name__ == "__main__":

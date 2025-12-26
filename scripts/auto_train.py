@@ -61,19 +61,19 @@ class AutoTrainer:
         with open(METADATA_PATH, 'w') as f:
             json.dump(self.champion_metadata, f, indent=4)
 
-    def run_optimization_loop(self):
+    def run_optimization_loop(self, days: int = 90, train_window: int = 252):
         """Run the rigorous Train -> Backtest -> Verify loop (Optimized)"""
         console.print("[bold cyan]Starting Optimized Auto-Training Loop[/bold cyan]")
         console.print(f"Current XGB Champion: [green]{self.champion_metadata.get('xgboost', {'win_rate':0})['win_rate']:.1%}[/green]")
         console.print(f"Current GD/SD Champion: [green]{self.champion_metadata.get('gd_sd', {'win_rate':0})['win_rate']:.1%}[/green]")
         
         # Step 0: Initial Data Loading & Feature Calculation (LOAD ONCE)
-        console.print("\n[yellow]⏳ Phase 0: One-time Data Preparation...[/yellow]")
+        console.print(f"\n[yellow]⏳ Phase 0: One-time Data Preparation ({days} days eval, {train_window} days train)...[/yellow]")
         backtester = MLBacktest()
         end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         
-        all_data = backtester._load_data(start_date, end_date, train_window=252)
+        all_data = backtester._load_data(start_date, end_date, train_window=train_window)
         if all_data.empty:
             console.print("[red]No data available[/red]")
             return
@@ -111,7 +111,7 @@ class AutoTrainer:
                     bt.take_profit_pct = 0.06 - (iteration * 0.005)
                 
                 # Step 2: Run Backtest with Pre-loaded Data
-                results = bt.run(start_date=start_date, end_date=end_date, train_window=252, pre_loaded_data=featured_data)
+                results = bt.run(start_date=start_date, end_date=end_date, train_window=train_window, pre_loaded_data=featured_data)
                 
                 if results and 'win_rate' in results:
                     monthly_wrs = [m['win_rate'] / 100.0 for m in results.get('monthly_metrics', [])]
@@ -163,5 +163,11 @@ class AutoTrainer:
             time.sleep(1)
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Auto-Training Optimization')
+    parser.add_argument('--days', type=int, default=90, help='Evaluation period in calendar days')
+    parser.add_argument('--train-window', type=int, default=252, help='Training window in trading days')
+    args = parser.parse_args()
+
     trainer = AutoTrainer()
-    trainer.run_optimization_loop()
+    trainer.run_optimization_loop(days=args.days, train_window=args.train_window)
