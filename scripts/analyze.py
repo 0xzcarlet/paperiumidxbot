@@ -88,7 +88,7 @@ class StockAnalyzer:
         basic_info = self._get_basic_info(ticker, price_data)
         technicals = self._get_technicals(price_data)
         ml_prediction = self._get_ml_prediction(price_data)
-        signals = self._get_signals(price_data)
+        signals = self._get_signals(price_data, ml_prediction)  # Pass ML prediction for 60% weight
         regime = self._get_market_regime()
         history = self._get_history(price_data)
         
@@ -249,10 +249,20 @@ class StockAnalyzer:
         except Exception as e:
             return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': str(e)}
     
-    def _get_signals(self, df: pd.DataFrame) -> dict:
-        """Get trading signals."""
+    def _get_signals(self, df: pd.DataFrame, ml_prediction: dict = None) -> dict:
+        """Get trading signals with ML predictions included."""
         try:
-            signals_df = self.signal_combiner.calculate_signals(df)
+            # Create ML predictions Series if we have valid predictions
+            ml_predictions = None
+            if ml_prediction and ml_prediction.get('probability') is not None:
+                # Create a Series with the ML probability for each row
+                # The signal combiner expects predictions indexed by DataFrame index
+                ml_predictions = pd.Series(
+                    [ml_prediction['probability']] * len(df),
+                    index=df.index
+                )
+            
+            signals_df = self.signal_combiner.calculate_signals(df, ml_predictions)
             latest = signals_df.iloc[-1]
             
             score = latest.get('composite_score', 0)
