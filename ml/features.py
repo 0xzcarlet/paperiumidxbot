@@ -4,8 +4,10 @@ Creates ML features from price data and signals
 """
 import pandas as pd
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import logging
+
+from signals.technical import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,20 @@ class FeatureEngineer:
     Creates features for machine learning models.
     Generates price-based, technical, and statistical features.
     """
+    
+    # EXACT 46-feature set expected by the champion model
+    LEGACY_46_FEATURES = [
+        'return_1d', 'return_5d', 'return_20d', 'sma_20', 'sma_50', 'rsi',
+        'macd', 'macd_signal', 'macd_hist', 'atr', 'volatility', 'volume_sma',
+        'rel_volume', 'return_2d', 'return_3d', 'return_10d', 'log_return',
+        'volatility_5d', 'volatility_20d', 'vol_ratio', 'price_to_ma10',
+        'price_to_ma20', 'price_to_ma50', 'hl_range', 'hl_range_avg', 'gap',
+        'close_position', 'volume_change', 'volume_ma20', 'relative_volume',
+        'volatility_zscore', 'intraday_range_pct', 'mean_reversion_strength',
+        'return_lag_1', 'return_lag_2', 'return_lag_3', 'return_lag_5',
+        'rsi_lag1', 'rsi_change', 'is_month_start', 'is_month_end',
+        'dow_0', 'dow_1', 'dow_2', 'dow_3', 'dow_4'
+    ]
     
     def __init__(self, config=None):
         """
@@ -29,6 +45,9 @@ class FeatureEngineer:
         else:
             self.feature_lags = [1, 2, 3, 5, 10, 20]
             self.target_horizon = 5  # 5-day forward prediction for day trading
+            
+        # Initialize sub-modules for internal indicator calculation
+        self.technical = TechnicalIndicators()
     
     def create_features(
         self, 
@@ -51,34 +70,65 @@ class FeatureEngineer:
         df['target'] = df['close'].shift(-target_horizon) / df['close'] - 1
         df['target_direction'] = (df['target'] > 0).astype(int)
         
-        # Price-based features
+        # 1. Base technical indicators (SMA, RSI, MACD, ATR)
+        df = self._add_base_indicators(df)
+        
+        # 2. Price-based features (Volatility, Returns, MA Relatives)
         df = self._add_price_features(df)
         
-        # Lagged features
+        # 3. Lagged features (Returns, Indicators)
         df = self._add_lagged_features(df)
         
-        # Calendar features
+        # 4. Calendar features (Day of week, Month start/end)
         df = self._add_calendar_features(df)
         
-        # Drop rows with NaN
+        # 5. Drop rows with NaN
         df = df.dropna()
         
-        # Get feature columns
-        feature_cols = self._get_feature_columns(df)
-        
-        X = df[feature_cols]
+        # 6. Ensure EXACT feature list and order
+        X = df[self.LEGACY_46_FEATURES]
         y = df['target_direction']
         
         return X, y
     
+    
+    def _add_base_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add base technical indicators expected by the 46-feature champion model."""
+        # SMA
+        df['sma_20'] = df['close'].rolling(window=20).mean()
+        df['sma_50'] = df['close'].rolling(window=50).mean()
+        
+        # RSI
+        df = self.technical.add_rsi(df)
+        
+        # MACD (Mapping to legacy names: macd_hist)
+        df = self.technical.add_macd(df)
+        df['macd_hist'] = df['macd_histogram']
+        
+        # ATR
+        df = self.technical.add_atr(df)
+        
+        # Volume
+        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        df['rel_volume'] = df['volume'] / df['volume_sma'].replace(0, 1)
+        
+        # Legacy Volatility (std of log returns * sqrt(252))
+        if 'log_return' not in df.columns:
+            df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+        df['volatility'] = df['log_return'].rolling(20).std() * np.sqrt(252)
+        
+        return df
+
     def _add_price_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add price-based features."""
         # Returns at various horizons
         for lag in self.feature_lags:
-            df[f'return_{lag}d'] = df['close'].pct_change(lag)
+            if f'return_{lag}d' not in df.columns:
+                df[f'return_{lag}d'] = df['close'].pct_change(lag)
         
-        # Log returns
-        df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+        # Ensure log_return exists
+        if 'log_return' not in df.columns:
+            df['log_return'] = np.log(df['close'] / df['close'].shift(1))
         
         # Volatility
         df['volatility_5d'] = df['log_return'].rolling(5).std() * np.sqrt(252)
@@ -133,6 +183,7 @@ class FeatureEngineer:
             df['rsi_lag1'] = df['rsi'].shift(1)
             df['rsi_change'] = df['rsi'] - df['rsi'].shift(1)
         
+        # MACD/ZScore changes if present (not strictly in the 46 set but useful)
         if 'macd_histogram' in df.columns:
             df['macd_hist_lag1'] = df['macd_histogram'].shift(1)
             df['macd_hist_change'] = df['macd_histogram'] - df['macd_histogram'].shift(1)
@@ -186,14 +237,12 @@ class FeatureEngineer:
         """
         df = df.copy()
         
+        df = self._add_base_indicators(df)
         df = self._add_price_features(df)
         df = self._add_lagged_features(df)
         df = self._add_calendar_features(df)
         
-        feature_cols = self._get_feature_columns(df)
-        
-        # Fill NaN with 0 for inference
-        X = df[feature_cols].fillna(0)
+        X = df[self.LEGACY_46_FEATURES].fillna(0)
         
         return X
     
