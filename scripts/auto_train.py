@@ -62,10 +62,12 @@ class AutoTrainer:
             all_data = self.storage.get_prices()
 
         iteration = 0
+        all_results = []
         while True:
             iteration += 1
             console.print(f"\n[bold magenta]Optimization Iteration {iteration}[/bold magenta]")
             
+            iter_summary = {}
             for model_type in ['xgboost', 'gd_sd']:
                 console.print(f"\n[bold cyan]Evaluating Model Type: {model_type.upper()}[/bold cyan]")
                 
@@ -73,7 +75,6 @@ class AutoTrainer:
                 backtester = MLBacktest(model_type=model_type)
                 
                 # Tuning: Try to hit 80% WR by tightening exits
-                # Iteration 1 starts with default, Iteration 2+ tightens
                 if iteration > 1:
                     backtester.stop_loss_pct = 0.03 + (iteration * 0.005)
                     backtester.take_profit_pct = 0.06 - (iteration * 0.005)
@@ -97,6 +98,7 @@ class AutoTrainer:
                     ret = results['total_return'] / 100.0
                     
                     console.print(f"  [bold]{model_type.upper()} Results:[/bold] Effective WR: {effective_wr:.1%} | Total Return: {ret:.1%}")
+                    iter_summary[model_type] = effective_wr
                     
                     if effective_wr >= TARGET_WIN_RATE:
                         console.print(f"[bold green]🏆 {model_type.upper()} TARGET REACHED![/bold green]")
@@ -109,9 +111,16 @@ class AutoTrainer:
                         else:
                             save_path = os.path.join(model_dir, 'global_sd_champion.pkl')
                             backtester.global_sd.save(save_path)
-                        return # Stop everything once one hits target
                 else:
                     console.print(f"[red]Backtest failed for {model_type}.[/red]")
+            
+            all_results.append(iter_summary)
+            
+            # Check if any model met target in this iteration
+            if any(wr >= TARGET_WIN_RATE for wr in iter_summary.values()):
+                console.print("\n[bold green]One or more models have reached the target performance![/bold green]")
+                # We stop iteration if at least one model is stable at 80%+
+                break
 
             if iteration >= 5:
                 console.print("[yellow]Reached max iterations without hitting perfect 80% target.[/yellow]")

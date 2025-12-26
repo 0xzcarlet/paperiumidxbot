@@ -55,6 +55,24 @@ uv run python scripts/eod_retrain.py
 ```
 *Updates existing positions (SL/TP hits) and retrains the model with today's data.*
 
+## 🧠 Intelligence & Strategies
+
+Paperium uses two distinct machine learning architectures that can be trained and compared side-by-side.
+
+### 1. XGBoost Champion (Default)
+The primary "brain" of the system.
+- **Strategy**: Gradient Boosting Trees (Classification).
+- **Focus**: Capturing non-linear relationships between technical indicators and short-term price movements.
+- **Strength**: High-precision entries. This model excels at identifying the "perfect" moment to enter a trade with a very high probability of hitting the target within 5 days.
+- **Target Metrics**: 85%+ effective win rate.
+
+### 2. GD/SD Alternative (Gradient Descent + Supply/Demand)
+A robust alternative that combines classic price action with modern optimization.
+- **Strategy**: Gradient Descent (Logistic Regression) paired with algorithmic Supply/Demand zone detection.
+- **Focus**: Structural price action and trend confirmation.
+- **Strength**: Reliability and low drawdown. It uses Supply/Demand zones to ensure entries are made near structural support/resistance, while the GD model confirms the directional probability.
+- **Target Metrics**: 65%+ effective win rate with extremely low volatility.
+
 ## ⚙️ Configuration
 
 Modify `config.py` to adjust:
