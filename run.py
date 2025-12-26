@@ -8,7 +8,7 @@ import sys
 import subprocess
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt, IntPrompt
+from rich.prompt import Prompt, IntPrompt, Confirm
 
 console = Console()
 
@@ -26,22 +26,19 @@ def main_menu():
     console.print("\n[bold yellow]Main Menu:[/bold yellow]")
     console.print("1. [bold green]Morning Ritual[/bold green] (Generate Signals)")
     console.print("2. [bold magenta]Evening Update[/bold magenta] (EOD Retrain & Evaluation)")
-    console.print("3. [bold cyan]Model Lab[/bold cyan] (Targeted Model Training)")
-    console.print("4. [bold white]Full Strategy Sweep[/bold white] (Global Auto-Train)")
-    console.print("5. [bold blue]Backtest & Verification[/bold blue] (Evaluate Models)")
+    console.print("3. [bold cyan]Model Training[/bold cyan] (Customizable)")
+    console.print("4. [bold blue]Evaluation[/bold blue] (Backtest)")
     console.print("0. Exit")
     
-    choice = Prompt.ask("\nSelect action", choices=["1", "2", "3", "4", "5", "0"], default="1")
+    choice = Prompt.ask("\nSelect action", choices=["1", "2", "3", "4", "0"], default="1")
     
     if choice == "1":
         subprocess.run(["uv", "run", "python", "scripts/morning_signals.py"])
     elif choice == "2":
         subprocess.run(["uv", "run", "python", "scripts/eod_retrain.py"])
     elif choice == "3":
-        subprocess.run(["uv", "run", "python", "scripts/train.py"])
+        train_menu()
     elif choice == "4":
-        subprocess.run(["uv", "run", "python", "scripts/train.py", "--days", "max", "--train-window", "max"])
-    elif choice == "5":
         eval_menu()
     elif choice == "0":
         console.print("[dim]Goodbye![/dim]")
@@ -50,15 +47,49 @@ def main_menu():
     input("\nPress Enter to return to menu...")
     main_menu()
 
+def train_menu():
+    clear_screen()
+    console.print(Panel.fit("[bold cyan]Model Training Lab[/bold cyan]", border_style="cyan"))
+    
+    # Customizable parameters
+    console.print("\n[dim]Configure training parameters:[/dim]\n")
+    
+    target = Prompt.ask("Target Win Rate (e.g. 0.80)", default="0.80")
+    days = Prompt.ask("Evaluation days (number or 'max')", default="90")
+    train_window = Prompt.ask("Training window (number or 'max')", default="252")
+    max_iter = IntPrompt.ask("Max optimization iterations", default=5)
+    force = Confirm.ask("Replace champion if better?", default=True)
+    
+    cmd = ["uv", "run", "python", "scripts/train.py",
+           "--target", target,
+           "--days", days,
+           "--train-window", train_window,
+           "--max-iter", str(max_iter)]
+    
+    if force:
+        cmd.append("--force")
+    
+    console.print(f"\n[yellow]Executing: {' '.join(cmd)}[/yellow]\n")
+    subprocess.run(cmd)
+
 def eval_menu():
     clear_screen()
     console.print(Panel.fit("[bold cyan]Evaluation Lab[/bold cyan]", border_style="cyan"))
     
-    start_date = Prompt.ask("Enter start date (YYYY-MM-DD)", default="2024-01-01")
-    end_date = Prompt.ask("Enter end date (YYYY-MM-DD)", default="2025-09-30")
+    console.print("\n[dim]Configure evaluation parameters:[/dim]\n")
+    
+    start_date = Prompt.ask("Start date (YYYY-MM-DD)", default="2024-01-01")
+    end_date = Prompt.ask("End date (YYYY-MM-DD)", default="2025-09-30")
+    window = IntPrompt.ask("Training window (trading days)", default=252)
+    retrain = Confirm.ask("Retrain model before evaluation?", default=False)
     
     cmd = ["uv", "run", "python", "scripts/eval.py", 
-                   "--start", start_date, "--end", end_date]
+           "--start", start_date, 
+           "--end", end_date,
+           "--window", str(window)]
+    
+    if retrain:
+        cmd.append("--retrain")
     
     console.print(f"\n[yellow]Executing: {' '.join(cmd)}[/yellow]\n")
     subprocess.run(cmd)

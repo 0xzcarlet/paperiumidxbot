@@ -272,8 +272,15 @@ class MLBacktest:
                         temp_xgb = TradingModel(config.ml)
                         temp_xgb.load(xgb_champ_path)
                         if temp_xgb.model is not None:
-                            base_model = temp_xgb.model
-                            console.print(f"  → Loaded XGB champion for Warm Start")
+                            # Check feature compatibility
+                            old_features = set(temp_xgb.feature_names) if temp_xgb.feature_names else set()
+                            new_features = set(X_combined.columns.tolist())
+                            
+                            if old_features == new_features:
+                                base_model = temp_xgb.model
+                                console.print(f"  → Loaded XGB champion for Warm Start")
+                            else:
+                                console.print(f"  [yellow]→ Feature mismatch detected (old: {len(old_features)}, new: {len(new_features)}). Training fresh model.[/yellow]")
                     except Exception as load_err:
                         console.print(f"  [yellow]→ Could not load XGB champion for warm start: {load_err}[/yellow]")
 
