@@ -73,17 +73,17 @@ def clean_universe():
     
     print(f"\nFinal active count: {len(active_stocks)} (Removed {len(config.data.stock_universe) - len(active_stocks)})")
     
-    # Update config.py
-    with open('config.py', 'r+') as f:
+    # Update data/universe.py
+    with open('data/universe.py', 'r+') as f:
         content = f.read()
         import re
         
-        # We need to find the specific part to replace
-        pattern = r"(stock_universe: List\[str\] = field\(default_factory=lambda: )\[.*?\]\)"
+        # Pattern to find IDX_UNIVERSE list
+        pattern = r"(IDX_UNIVERSE = )\[.*?\]"
         
         # Format the list nicely for the file
-        list_str = "[\n        " + ",\n        ".join([f"'{s}'" for s in active_stocks]) + "\n    ]"
-        replacement = r"\1" + list_str + ")"
+        list_str = "[\n    " + ",\n    ".join([f"'{s}'" for s in active_stocks]) + "\n]"
+        replacement = r"\1" + list_str
         
         new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
         
@@ -91,7 +91,7 @@ def clean_universe():
         f.write(new_content)
         f.truncate()
         
-    print("✓ config.py updated with robust active universe.")
+    print("✓ data/universe.py updated with robust active universe.")
 
 if __name__ == "__main__":
     clean_universe()

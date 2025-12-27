@@ -526,11 +526,12 @@ class StockAnalyzer:
 def main():
     parser = argparse.ArgumentParser(description='Single Stock Analysis')
     parser.add_argument('ticker', type=str, help='Stock ticker (e.g., BBCA or BBCA.JK)')
+    parser.add_argument('--portfolio', type=float, default=100000000.0, help='Portfolio value (IDR) for sizing')
     
     args = parser.parse_args()
     
     analyzer = StockAnalyzer()
-    analyzer.analyze(args.ticker)
+    analyzer.analyze(args.ticker, portfolio_value=args.portfolio)
 
 
 if __name__ == "__main__":

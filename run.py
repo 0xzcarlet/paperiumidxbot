@@ -24,14 +24,15 @@ def main_menu():
     ))
     
     console.print("\n[bold yellow]Main Menu:[/bold yellow]")
+    console.print("0. [bold yellow]Initial Setup & Data Prep[/bold yellow] (Mandatory)")
     console.print("1. [bold green]Morning Ritual[/bold green] (Generate Signals)")
     console.print("2. [bold magenta]Evening Update[/bold magenta] (EOD Retrain & Evaluation)")
     console.print("3. [bold cyan]Model Training[/bold cyan] (Customizable)")
     console.print("4. [bold blue]Evaluation[/bold blue] (Backtest)")
     console.print("5. [bold white]Stock Analysis[/bold white] (Single Ticker Deep Dive)")
-    console.print("0. Exit")
+    console.print("X. Exit")
     
-    choice = Prompt.ask("\nSelect action", choices=["1", "2", "3", "4", "5", "0"], default="1")
+    choice = Prompt.ask("\nSelect action", choices=["1", "2", "3", "4", "5", "0", "X", "x"], default="1")
     
     if choice == "1":
         custom_capital = IntPrompt.ask("Extra Money / Free Capital to allocate (IDR)", default=0)
@@ -48,11 +49,33 @@ def main_menu():
     elif choice == "5":
         analyze_menu()
     elif choice == "0":
+        setup_menu()
+    elif choice.upper() == "X":
         console.print("[dim]Goodbye![/dim]")
         sys.exit(0)
         
     input("\nPress Enter to return to menu...")
     main_menu()
+
+def setup_menu():
+    clear_screen()
+    console.print(Panel.fit("[bold yellow]Initial Setup & Data Prep[/bold yellow]", border_style="yellow"))
+    
+    console.print("\n[dim]Prepare your environment and sync market action[/dim]\n")
+    console.print("1. [bold cyan]Clean Universe[/bold cyan] (Filter illiquid/suspended stocks)")
+    console.print("2. [bold magenta]Sync Data[/bold magenta] (Fetch 2 years of history via YF)")
+    console.print("B. Back to Main Menu")
+    
+    choice = Prompt.ask("\nSelect setup action", choices=["1", "2", "B", "b"], default="1")
+    
+    if choice == "1":
+        console.print("\n[yellow]Running: uv run python scripts/clean_universe.py[/yellow]\n")
+        subprocess.run(["uv", "run", "python", "scripts/clean_universe.py"])
+    elif choice == "2":
+        console.print("\n[yellow]Running: uv run python scripts/sync_data.py[/yellow]\n")
+        subprocess.run(["uv", "run", "python", "scripts/sync_data.py"])
+    elif choice.upper() == "B":
+        return
 
 def analyze_menu():
     clear_screen()
@@ -79,7 +102,10 @@ def train_menu():
     try:
         import json
         with open('models/champion_metadata.json', 'r') as f:
-            metadata = json.load(f)
+            try:
+                metadata = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                metadata = {}
         current_wr = metadata.get('xgboost', {}).get('win_rate', 0)
         current_wl = metadata.get('xgboost', {}).get('wl_ratio', 0)
         current_score = metadata.get('xgboost', {}).get('combined_score', current_wr)
