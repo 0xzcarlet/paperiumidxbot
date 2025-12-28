@@ -73,6 +73,80 @@ uv run python scripts/train.py --days 90 --target 0.85
 uv run python scripts/train.py --days max --train-window max
 ```
 
+#### Customizing Your Model
+
+Want to tweak the model to match your trading style? Here are the key parameters you can adjust:
+
+##### 📁 **File: `config.py`**
+
+**XGBoost Model Parameters** (Line 54-61):
+```python
+# Conservative (Gen 5 default - stable, less overfitting)
+n_estimators: int = 100      # Number of trees (↑ = more complex)
+max_depth: int = 5            # Tree depth (↑ = more patterns, risk overfitting)
+learning_rate: float = 0.1    # Learning speed (↓ = slower but stable)
+min_child_weight: int = 3     # Min samples per leaf (↑ = more conservative)
+
+# Aggressive (more patterns, higher risk)
+n_estimators: int = 200
+max_depth: int = 7
+learning_rate: float = 0.05
+```
+
+##### 📁 **File: `signals/screener.py`**
+
+**Stock Filtering Criteria** (Line 19-21):
+```python
+# Relaxed (more stocks, more noise)
+self.min_price = 50           # Minimum stock price (↓ = include penny stocks)
+self.min_volume = 1_000_000   # Daily volume (↓ = include illiquid stocks)
+
+# Strict (fewer stocks, higher quality)
+self.min_price = 200
+self.min_volume = 5_000_000
+```
+
+##### 📁 **File: `scripts/eval.py`**
+
+**Risk Management** (Line 78-84):
+```python
+# Conservative (smaller losses, smaller gains)
+self.stop_loss_pct = 0.03     # 3% max loss per trade
+self.take_profit_pct = 0.06   # 6% profit target
+self.max_hold_days = 3        # Exit after 3 days
+
+# Aggressive (bigger swings)
+self.stop_loss_pct = 0.07     # 7% max loss
+self.take_profit_pct = 0.15   # 15% profit target
+self.max_hold_days = 10       # Hold longer
+```
+
+**Buy Signal Threshold** (Line 591):
+```python
+# Relaxed (more signals, lower quality)
+if prediction_score > 0.05:   # Buy threshold (↓ = more trades)
+
+# Strict (fewer signals, higher quality)
+if prediction_score > 0.20:   # Buy threshold (↑ = fewer trades)
+```
+
+**Portfolio Settings** (Line 78-80):
+```python
+self.max_positions = 10       # Max concurrent stocks (↑ = more diversification)
+self.buy_fee = 0.0015         # 0.15% buy fee (adjust to your broker)
+self.sell_fee = 0.0025        # 0.25% sell fee
+```
+
+##### 🎯 **Trading Style Presets**
+
+| Style | max_depth | threshold | SL | TP | max_hold |
+|-------|-----------|-----------|----|----|----------|
+| **Conservative** | 5 | 0.15 | 3% | 6% | 3 days |
+| **Balanced** (Gen 5) | 5 | 0.10 | 5% | 8% | 5 days |
+| **Aggressive** | 7 | 0.05 | 7% | 12% | 10 days |
+
+**Pro Tip**: After changing parameters, always retrain the model and backtest before going live!
+
 ### 2. Evaluation
 Verify performance over a specific period:
 ```bash
