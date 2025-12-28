@@ -126,7 +126,9 @@ class StatisticalSignals:
         df['return_20d'] = df['close'].pct_change(20)
         
         # Log returns (for statistical analysis)
-        df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+        ratio = (df['close'] / df['close'].shift(1)).replace(0, np.nan).fillna(1.0)
+        df['log_return'] = np.log(ratio)
+
         
         # Cumulative returns
         df['cum_return_20d'] = df['return_1d'].rolling(window=20).sum()
@@ -302,8 +304,10 @@ class PairTrading:
         Returns:
             Tuple of (spread, zscore)
         """
-        # Log price ratio (spread)
-        spread = np.log(prices1 / prices2)
+        # Log price ratio (spread) - Safe log
+        ratio = (prices1 / prices2).replace([0, np.inf, -np.inf], np.nan).fillna(1.0)
+        spread = np.log(ratio)
+
         
         # Rolling Z-score
         mean = spread.rolling(window=self.lookback).mean()
