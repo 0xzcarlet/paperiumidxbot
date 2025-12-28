@@ -126,6 +126,8 @@ class TradingModel:
         self.feature_names = X_train.columns.tolist()
         
         # Train model
+        import time
+        train_start = time.time()
         if base_model is None:
             self.model = self._create_model()
             self.model.fit(X_train, y_train)
@@ -133,12 +135,14 @@ class TradingModel:
             # Incremental learning: pass booster to xgb_model
             # Note: Feature set must be identical
             self.model.fit(X_train, y_train, xgb_model=base_model.get_booster())
-            
+        
+        train_duration = time.time() - train_start
         self.last_trained = datetime.now()
         
         metrics = {
             'train_samples': len(X_train),
-            'features': len(self.feature_names)
+            'features': len(self.feature_names),
+            'train_time_sec': round(train_duration, 4)
         }
         
         # Validate if requested
@@ -146,7 +150,7 @@ class TradingModel:
             val_metrics = self._validate(X_train, y_train)
             metrics.update(val_metrics)
         
-        logger.info(f"Model trained: {metrics}")
+        logger.info(f"Model trained in {train_duration:.4f}s: {metrics}")
         
         return metrics
     

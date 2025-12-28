@@ -115,8 +115,12 @@ class MLBacktest:
                     return
                 
             # Run simulation
+            import time
             console.print("[yellow]Running simulation...[/yellow]")
+            sim_start = time.time()
             results = self._simulate(all_data, start_date, end_date, is_pre_featured=(pre_loaded_data is not None))
+            sim_time = time.time() - sim_start
+            console.print(f"[dim]Simulation time: {sim_time:.2f}s[/dim]")
             
             # Display results
             self._display_results(results)
