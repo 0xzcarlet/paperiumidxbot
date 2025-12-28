@@ -17,8 +17,8 @@ class Screener:
     """
     
     def __init__(self, config=None):
-        self.min_price = 50  # No penny stocks below 50 (Gen 4 value)
-        self.min_volume = 1_000_000  # Minimum liquidity (Gen 4 value)
+        self.min_price = 50  # No penny stocks below 50
+        self.min_volume = 1_000_000  # Minimum liquidity 
 
         
     def screen_stocks(self, data_map: Dict[str, pd.DataFrame]) -> List[str]:

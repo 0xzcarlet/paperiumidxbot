@@ -53,10 +53,15 @@ class EODRetraining:
         self.fetcher = DataFetcher(config.data.stock_universe)
         self.signal_combiner = SignalCombiner(config)
 
-        # Load champion metadata
+        # Load champion metadata (includes optimal SL/TP from training)
         metadata_path = os.path.join('models', 'champion_metadata.json')
         with open(metadata_path, 'r') as f:
             self.champion_metadata = json.load(f)
+
+        # Gen 5.1: Load optimal SL/TP configuration from champion
+        xgb_meta = self.champion_metadata.get('xgboost', {})
+        self.sl_atr_mult = xgb_meta.get('sl_atr_mult', 2.0)  # Default to 2.0 if not found
+        self.tp_atr_mult = xgb_meta.get('tp_atr_mult', 3.0)  # Default to 3.0 if not found
 
         self.position_manager = PositionManager()
     
@@ -64,7 +69,8 @@ class EODRetraining:
         """Run the EOD retraining pipeline."""
         console.print(Panel.fit(
             f"[bold magenta]IHSG End-of-Day Processing[/bold magenta]\n"
-            f"[dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]",
+            f"[dim]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n"
+            f"[dim]SL/TP Config: {self.sl_atr_mult:.2f}x ATR / {self.tp_atr_mult:.2f}x ATR[/dim]",
             border_style="magenta"
         ))
         
@@ -150,9 +156,10 @@ class EODRetraining:
             }
             
             if update.get('exit'):
-                if update['reason'] == 'HIT_TAKE_PROFIT':
+                reason = update.get('reason', '')
+                if reason == 'HIT_TAKE_PROFIT':
                     results['hit_tp'].append(result_entry)
-                elif update['reason'] == 'HIT_STOP_LOSS':
+                elif reason == 'HIT_STOP_LOSS':
                     results['hit_sl'].append(result_entry)
             elif update.get('filled'):
                 results['filled'].append(result_entry)

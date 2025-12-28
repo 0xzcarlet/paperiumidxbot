@@ -50,17 +50,14 @@ def main():
         total_days = (db_max - db_min).days
         
         if args.days == 'max':
-            if total_days >= 365 * 1.5:
-                eval_days = 365
-            else:
-                eval_days = max(30, total_days // 3)
-            console.print(f"[dim]Auto-setting eval days to {eval_days} (max window)[/dim]")
+            eval_days = 365  # Fixed: 1 year evaluation period
+            console.print(f"[dim]Auto-setting eval days to {eval_days} (1 year fixed)[/dim]")
         else:
             eval_days = int(args.days)
-            
+
         if args.train_window == 'max':
-            train_window = min(total_days - eval_days, 252 * 5)
-            console.print(f"[dim]Auto-setting train window to {train_window} (max window)[/dim]")
+            train_window = int(252 * 4)  # Fixed: 4 years of trading days (1008 days)
+            console.print(f"[dim]Auto-setting train window to {train_window} days (4 years fixed)[/dim]")
         else:
             train_window = int(args.train_window)
     else:
@@ -124,16 +121,45 @@ def main():
         processed_data_list.append(group)
     featured_data = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
 
-    # Create backtester ONCE (outside loop) to preserve cache
-    bt = MLBacktest(model_type='xgboost', retrain=True)
+    # Gen 5.1: Dynamic SL/TP tuning across iterations
+    import numpy as np
 
-    # Gen 4 approach: Simple iteration without complex optimization
+    # Tracking best configuration
     best_wr = 0.0
+    best_sl_mult = 2.0
+    best_tp_mult = 3.0
+    best_config = {'sl': best_sl_mult, 'tp': best_tp_mult, 'wr': 0.0, 'wl': 0.0}
+
+    # Create backtester ONCE (preserve cache across iterations)
+    bt = MLBacktest(model_type='xgboost', retrain=True)
 
     iteration = 0
     while iteration < args.max_iter:
         iteration += 1
+
+        # Intelligent SL/TP selection - explore around best known config
+        if iteration == 1:
+            sl_mult = 2.0
+            tp_mult = 3.0
+        elif iteration <= 10:
+            # First 10: small perturbations around baseline
+            sl_mult = float(np.clip(2.0 + np.random.uniform(-0.3, 0.3), 1.5, 3.5))
+            tp_mult = float(np.clip(3.0 + np.random.uniform(-0.5, 0.5), 2.0, 5.0))
+        elif iteration <= 30:
+            # 11-30: wider search around current best
+            sl_mult = float(np.clip(best_sl_mult + np.random.uniform(-0.5, 0.5), 1.5, 3.5))
+            tp_mult = float(np.clip(best_tp_mult + np.random.uniform(-0.8, 0.8), 2.0, 5.0))
+        else:
+            # 31+: fine-tuning around best
+            sl_mult = float(np.clip(best_sl_mult + np.random.uniform(-0.2, 0.2), 1.5, 3.5))
+            tp_mult = float(np.clip(best_tp_mult + np.random.uniform(-0.3, 0.3), 2.0, 5.0))
+
         console.print(f"\n[bold magenta]Iteration {iteration}/{args.max_iter}[/bold magenta]")
+        console.print(f"  SL/TP Config: [cyan]{sl_mult:.2f}x ATR[/cyan] / [cyan]{tp_mult:.2f}x ATR[/cyan]")
+
+        # Update SL/TP for this iteration
+        bt.sl_atr_mult = sl_mult
+        bt.tp_atr_mult = tp_mult
 
         iteration_start = datetime.now()
         results = bt.run(start_date=start_date, end_date=end_date, train_window=train_window, pre_loaded_data=featured_data)
@@ -148,7 +174,7 @@ def main():
             avg_loss = abs(results.get('avg_loss', 1))
             wl_ratio = avg_win / avg_loss if avg_loss > 0 else 0
 
-            # Gen 4 Formula: Pure Win Rate Focus
+            # Pure Win Rate Focus
             # W/L ratio naturally follows when win rate is high
             # Keep it simple - what worked for Gen 1-4
             combined_score = effective_wr
@@ -156,11 +182,23 @@ def main():
             console.print(f"  Win Rate: [bold]{effective_wr:.1%}[/bold]")
             console.print(f"  W/L Ratio: [bold]{wl_ratio:.2f}x[/bold]")
 
+            # Gen 5.1: Track best SL/TP configuration
+            if effective_wr > best_wr:
+                best_wr = effective_wr
+                best_sl_mult = sl_mult
+                best_tp_mult = tp_mult
+                best_config = {'sl': sl_mult, 'tp': tp_mult, 'wr': effective_wr, 'wl': wl_ratio}
+                console.print(f"  [green]New best SL/TP: {sl_mult:.2f}x / {tp_mult:.2f}x[/green]")
+
             # Save iteration data to session file
             iteration_data = {
                 "iteration": iteration,
                 "timestamp": datetime.now().isoformat(),
                 "duration_seconds": iteration_time,
+                "sl_tp_config": {
+                    "sl_atr_mult": float(sl_mult),
+                    "tp_atr_mult": float(tp_mult)
+                },
                 "metrics": {
                     "win_rate": float(effective_wr),
                     "wl_ratio": float(wl_ratio),
@@ -181,7 +219,7 @@ def main():
             with open(session_file, 'w') as f:
                 json.dump(session_data, f, indent=2)
 
-            # Gen 4 approach: Simple, no complex optimization
+            # Simple, no complex optimization
             # Just train fresh models and pick the best one
 
             # Metadata for comparison
@@ -195,7 +233,7 @@ def main():
             else:
                 metadata = {'xgboost': {'combined_score': 0.0}}
                 
-            # Gen 4 comparison: Use Win Rate (effective_wr)
+            # Use Win Rate (effective_wr)
             current_best_wr = metadata.get('xgboost', {}).get('win_rate', 0.0)
 
             if args.force:
@@ -207,6 +245,8 @@ def main():
                     metadata['xgboost'] = {
                         'win_rate': float(effective_wr),
                         'wl_ratio': float(wl_ratio),
+                        'sl_atr_mult': float(sl_mult),
+                        'tp_atr_mult': float(tp_mult),
                         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'target_met': bool(effective_wr >= args.target)
                     }
@@ -239,8 +279,13 @@ def main():
             "iteration": best_iteration["iteration"],
             "win_rate": best_iteration["metrics"]["win_rate"],
             "wl_ratio": best_iteration["metrics"]["wl_ratio"],
-            "total_return": best_iteration["metrics"]["total_return"]
+            "total_return": best_iteration["metrics"]["total_return"],
+            "sl_atr_mult": best_iteration["sl_tp_config"]["sl_atr_mult"],
+            "tp_atr_mult": best_iteration["sl_tp_config"]["tp_atr_mult"]
         }
+
+    # Gen 5.1: Save best SL/TP configuration
+    session_data["best_sl_tp_config"] = best_config
 
     with open(session_file, 'w') as f:
         json.dump(session_data, f, indent=2)
@@ -250,6 +295,7 @@ def main():
     if session_data.get("best_iteration"):
         best = session_data["best_iteration"]
         console.print(f"Best iteration: #{best['iteration']} - WR: {best['win_rate']:.1%}, W/L: {best['wl_ratio']:.2f}x")
+        console.print(f"Best SL/TP: [cyan]{best['sl_atr_mult']:.2f}x ATR[/cyan] / [cyan]{best['tp_atr_mult']:.2f}x ATR[/cyan]")
 
 if __name__ == "__main__":
     main()

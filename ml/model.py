@@ -65,10 +65,11 @@ class TradingModel:
             'max_depth': self.max_depth,
             'learning_rate': self.learning_rate,
             'min_child_weight': self.min_child_weight,
-            'subsample': 0.8,              # Gen 4 value (was 0.7 - too restrictive!)
-            'colsample_bytree': 0.8,       # Gen 4 value (was 0.7 - too restrictive!)
-            # Removed reg_alpha (was 0.1 - killing weak features!)
-            # Removed gamma (was 0.1 - preventing splits!)
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            # Gen 5.1: Light regularization to prevent overfitting (learned from Gen 1-4 disaster)
+            'reg_alpha': 0.01,   # L1 regularization (was 0 = overfit, was 0.1 = too harsh)
+            'gamma': 0.01,       # Minimum loss reduction for split (prevent noise fitting)
             'objective': 'binary:logistic',
             'eval_metric': 'logloss',
             'random_state': 42,

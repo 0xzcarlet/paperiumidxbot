@@ -59,13 +59,16 @@ class MLBacktest:
     Target Horizon: 5-Day Forward Return (Day Trading Strategy)
     """
     
-    def __init__(self, model_type: str = 'xgboost', retrain: bool = False, custom_model_path: Optional[str] = None):
+    def __init__(self, model_type: str = 'xgboost', retrain: bool = False, custom_model_path: Optional[str] = None,
+                 sl_atr_mult: float = 2.0, tp_atr_mult: float = 3.0):
         """
         Args:
             model_type: 'xgboost'
             retrain: If True, will train models before backtesting.
                      If False, will load existing champion models or reject.
             custom_model_path: Optional custom path to model file (for parallel execution)
+            sl_atr_mult: Stop loss ATR multiplier (dynamic per iteration)
+            tp_atr_mult: Take profit ATR multiplier (dynamic per iteration)
         """
         self.storage = DataStorage(config.data.db_path)
         self.sector_mapping = get_sector_mapping()
@@ -79,8 +82,10 @@ class MLBacktest:
         self.max_positions = 10
         self.buy_fee = 0.0015
         self.sell_fee = 0.0025
-        self.stop_loss_pct = 0.05
-        self.take_profit_pct = 0.08
+
+        # Dynamic SL/TP (ATR-based, tunable per iteration)
+        self.sl_atr_mult = sl_atr_mult  # Gen 5.1: Dynamic stop loss
+        self.tp_atr_mult = tp_atr_mult  # Gen 5.1: Dynamic take profit
         self.max_hold_days = 5
 
         # Model (Global XGBoost)
@@ -299,20 +304,46 @@ class MLBacktest:
             try:
                 self.global_xgb = TradingModel(config.ml)
                 self.global_xgb.feature_names = X_combined.columns.tolist()
-                
-                # Gen 4 Strategy: Always train fresh
-                # Each iteration is independent, randomness explores different solutions
-                self.global_xgb.model = self.global_xgb._create_model()
+
+                # WARM START: Load champion if exists and continue training
+                champ_path = 'models/global_xgb_champion.pkl'
+                base_model = None
+                if os.path.exists(champ_path):
+                    try:
+                        # Load existing champion to use as starting point
+                        temp_model = TradingModel(config.ml)
+                        temp_model.load(champ_path)
+                        base_model = temp_model.model
+                        log(f"  [cyan]Warm start: Loaded champion from {champ_path}[/cyan]")
+                    except Exception as e:
+                        log(f"  [yellow]Could not load champion for warm start: {e}[/yellow]")
+                        base_model = None
+
+                if base_model is None:
+                    # Fresh model if no champion exists
+                    self.global_xgb.model = self.global_xgb._create_model()
+                    log("  [yellow]Training fresh model (no champion found)[/yellow]")
+                else:
+                    # Create new model instance for warm start
+                    self.global_xgb.model = self.global_xgb._create_model()
+
                 # Remove deprecated param
                 if 'use_label_encoder' in self.global_xgb.model.get_params():
                     self.global_xgb.model.set_params(use_label_encoder=False)
 
                 train_start = time.time()
-                # Fresh training with sample weights
-                self.global_xgb.model.fit(
-                    X_combined, y_combined,
-                    sample_weight=sample_weights
-                )
+                # Train with sample weights (warm start if base_model exists)
+                if base_model is not None:
+                    self.global_xgb.model.fit(
+                        X_combined, y_combined,
+                        sample_weight=sample_weights,
+                        xgb_model=base_model.get_booster()
+                    )
+                else:
+                    self.global_xgb.model.fit(
+                        X_combined, y_combined,
+                        sample_weight=sample_weights
+                    )
                 train_time = time.time() - train_start
                 log(f"  [green]✓ Trained Global XGBoost model in {train_time:.2f}s[/green]")
             except Exception as e:
@@ -561,8 +592,8 @@ class MLBacktest:
                             prediction_score = 0.0
                         max_seen_score = max(max_seen_score, prediction_score)
 
-                        # Logic for buy signal (conviction threshold - Gen 4 value)
-                        if prediction_score > 0.1:
+                        # Logic for buy signal 
+                        if prediction_score > 0.15:
                             ticker_day = day_data[day_data['ticker'] == ticker].iloc[0]
 
                             candidates.append({
@@ -596,14 +627,18 @@ class MLBacktest:
                             continue
                         
                         cash -= cost
+                        # Gen 5.1: Fully dynamic SL/TP based on ATR multipliers
+                        sl_pct = (atr / entry_price) * self.sl_atr_mult
+                        tp_pct = (atr / entry_price) * self.tp_atr_mult
+
                         positions[cand['ticker']] = {
                             'ticker': cand['ticker'], # Added for sector check
                             'shares': shares,
                             'entry_price': entry_price,
                             'entry_date': date,
                             'days_held': 0,
-                            'stop_loss': entry_price * (1 - max(self.stop_loss_pct, atr / entry_price * 2)),
-                            'take_profit': entry_price * (1 + max(self.take_profit_pct, atr / entry_price * 3))
+                            'stop_loss': entry_price * (1 - sl_pct),
+                            'take_profit': entry_price * (1 + tp_pct)
                         }
                 
                 # Calculate equity

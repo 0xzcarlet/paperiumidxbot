@@ -77,11 +77,23 @@ class MorningSignals:
             self.model.load(xgb_path)
         else:
             logger.warning("No champion model found! Using indicators only.")
-        self.exit_manager = ExitManager(config.exit)
+
+        # Gen 5.1: Load optimal SL/TP from champion metadata
+        self.metadata = self._load_metadata()
+
+        # Override config with optimal SL/TP from training
+        exit_config = config.exit
+        if 'sl_atr_mult' in self.metadata and 'tp_atr_mult' in self.metadata:
+            exit_config.stop_loss_atr_mult = self.metadata['sl_atr_mult']
+            exit_config.take_profit_atr_mult = self.metadata['tp_atr_mult']
+            logger.info(f"Using optimized SL/TP: {exit_config.stop_loss_atr_mult:.2f}x / {exit_config.take_profit_atr_mult:.2f}x ATR")
+        else:
+            logger.warning("No SL/TP config in metadata, using defaults from config.py")
+
+        self.exit_manager = ExitManager(exit_config)
         self.position_sizer = PositionSizer(config.portfolio)
         self.position_manager = PositionManager()
         self.sector_mapping = get_sector_mapping()
-        self.metadata = self._load_metadata()
 
     def _load_metadata(self) -> Dict:
         """Load model metadata from JSON."""
