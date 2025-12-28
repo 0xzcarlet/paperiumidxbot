@@ -70,6 +70,12 @@ def main():
     console.print(f"[bold cyan]Starting Targeted Training for XGBOOST (Gen 5)[/bold cyan]")
     console.print(f"Target Score: [green]{args.target:.1%}[/green] | Max Iter: {args.max_iter}")
 
+    # Show GPU warning once at the start
+    if args.gpu:
+        import sys
+        if sys.platform == "darwin":
+            console.print("[yellow]⚠ XGBoost MPS (Metal) acceleration can be unstable on some Mac environments. Using high-performance CPU ('hist') instead.[/yellow]")
+
     # Phase 0: Data Prep
     backtester = MLBacktest()
     end_date = datetime.now().strftime('%Y-%m-%d')

@@ -18,6 +18,9 @@ from .features import FeatureEngineer
 
 logger = logging.getLogger(__name__)
 
+# Global flag to show GPU warning only once per session
+_gpu_warning_shown = False
+
 
 class TradingModel:
     """
@@ -73,12 +76,15 @@ class TradingModel:
             'n_jobs': -1
         }
 
-        
+
         if self.use_gpu:
+            global _gpu_warning_shown
             import sys
             # Check for MPS stability - Fallback to CPU on Mac to avoid binary crash
             if sys.platform == "darwin":
-                logger.warning("XGBoost MPS (Metal) acceleration can be unstable on some Mac environments. Using high-performance CPU ('hist') instead.")
+                if not _gpu_warning_shown:
+                    logger.warning("XGBoost MPS (Metal) acceleration can be unstable on some Mac environments. Using high-performance CPU ('hist') instead.")
+                    _gpu_warning_shown = True
                 params['tree_method'] = 'hist'
                 params['device'] = 'cpu'
             else:
