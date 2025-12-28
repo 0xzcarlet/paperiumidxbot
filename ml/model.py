@@ -253,9 +253,13 @@ class TradingModel:
         # Clean data for GPU backend
         X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
         
+        # Use DMatrix to avoid device mismatch warning (explicit data transfer)
+        import xgboost as xgb
+        dmat = xgb.DMatrix(X, feature_names=self.feature_names)
+        
         # Predict
-        y_pred = self.model.predict(X)
-        y_proba = self.model.predict_proba(X)[:, 1]  # Probability of class 1 (up)
+        y_proba = self.model.get_booster().predict(dmat)
+        y_pred = (y_proba > 0.5).astype(int)
         
         return y_pred, y_proba
     
@@ -294,8 +298,9 @@ class TradingModel:
         """
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         
+        # Save metadata separately
         model_data = {
-            'model': self.model,
+            # 'model': self.model,  <-- Don't pickle the model wrapper anymore
             'feature_names': self.feature_names,
             'last_trained': self.last_trained,
             'performance_history': self.performance_history,
@@ -309,8 +314,13 @@ class TradingModel:
         
         with open(path, 'wb') as f:
             pickle.dump(model_data, f)
+            
+        # Save XGBoost model natively (JSON) to avoid version mismatch warnings
+        if self.model is not None:
+            xgb_path = path.replace('.pkl', '.json')
+            self.model.save_model(xgb_path)
         
-        logger.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path} (metadata) and {xgb_path} (booster)")
     
     def load(self, path: str):
         """
@@ -322,8 +332,18 @@ class TradingModel:
         with open(path, 'rb') as f:
             model_data = pickle.load(f)
         
-        self.model = model_data['model']
+        # Load metadata
         self.feature_names = model_data['feature_names']
+        
+        # Load model: Check for native JSON first, fallback to pickle 'model' key for backward compatibility
+        xgb_path = path.replace('.pkl', '.json')
+        if os.path.exists(xgb_path):
+            self.model = self._create_model()
+            self.model.load_model(xgb_path)
+            logger.info("  -> Loaded native XGBoost JSON model")
+        elif 'model' in model_data and model_data['model'] is not None:
+            self.model = model_data['model']
+            logger.info("  -> Loaded legacy pickled XGBoost model")
         self.last_trained = model_data.get('last_trained')
         self.performance_history = model_data.get('performance_history', [])
         

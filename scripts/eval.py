@@ -381,7 +381,10 @@ class MLBacktest:
                         # Ensure float32 for GPU efficiency
                         X_clean = X_clean.astype(np.float32)
                         
-                        probs = self.global_xgb.model.predict_proba(X_clean.values)[:, 1]
+                        import xgboost as xgb
+                        dmatrix = xgb.DMatrix(X_clean.values, feature_names=X_clean.columns.tolist())
+                        probs = self.global_xgb.model.get_booster().predict(dmatrix)
+                        
                         xgb_scores[ticker] = pd.Series((probs - 0.5) * 2, index=X.index)
                 except Exception as e:
                     console.print(f"  [red]✗[/red] XGBoost batch prediction failed for {ticker}: {e}")
