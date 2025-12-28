@@ -88,14 +88,15 @@ def main():
         group = backtester._add_features(group)
         processed_data_list.append(group)
     featured_data = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
-    console.print(f"  ✓ Loaded {len(featured_data)} records for {all_data['ticker'].nunique()} stocks")
+
+    # Create backtester ONCE (outside loop) to preserve cache
+    bt = MLBacktest(model_type='xgboost', retrain=True)
 
     iteration = 0
     while iteration < args.max_iter:
         iteration += 1
         console.print(f"\n[bold magenta]Iteration {iteration}/{args.max_iter}[/bold magenta]")
-        
-        bt = MLBacktest(model_type='xgboost', retrain=True)
+
         if iteration > 1:
             # Exact Gen 4 Iteration Logic
             bt.stop_loss_pct = 0.03 + (iteration * 0.005)
