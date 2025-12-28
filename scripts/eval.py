@@ -27,8 +27,10 @@ from rich.progress import (
     BarColumn,
     TaskProgressColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn
+    MofNCompleteColumn,
+    SpeedColumn
 )
+
 
 
 from config import config
@@ -349,10 +351,14 @@ class MLBacktest:
                 TaskProgressColumn(),
                 MofNCompleteColumn(),
                 TextColumn("•"),
+                SpeedColumn(precision=1),
+                TextColumn("•"),
                 TimeRemainingColumn(),
-                console=console
+                console=console,
+                refresh_per_second=2
             ) as progress:
                 task = progress.add_task("[cyan]Processing tickers...", total=all_data['ticker'].nunique())
+
                 for ticker, group in ticker_groups:
                     group = group.sort_values('date')
                     group = self._add_features(group)
@@ -382,10 +388,14 @@ class MLBacktest:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
+            SpeedColumn(precision=1),
+            TextColumn("•"),
             TimeRemainingColumn(),
-            console=console
+            console=console,
+            refresh_per_second=2
         ) as progress:
             task = progress.add_task("[cyan]Predicting...", total=len(ticker_data_map))
+
             for ticker, ticker_df_indexed in ticker_data_map.items():
                 ticker_df = ticker_df_indexed.reset_index() # Need original df for feature engineer
                 # XGBoost Batch
@@ -446,10 +456,14 @@ class MLBacktest:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
+            SpeedColumn(precision=1),
+            TextColumn("•"),
             TimeRemainingColumn(),
-            console=console
+            console=console,
+            refresh_per_second=2
         ) as progress:
             task = progress.add_task("[cyan]Simulating...", total=len(all_dates))
+
 
             
             for date in all_dates:
