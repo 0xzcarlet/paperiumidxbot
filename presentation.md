@@ -319,12 +319,14 @@ $$\frac{W}{L} = \frac{|\text{Avg Win}|}{|\text{Avg Loss}|}$$
 **Iteration Parameters (Gen-5):**
 - Iteration 1: SL/TP from config (Defaults: 5% / 8%)
 - Iteration 2+: Iterative tuning of risk parameters to maximize PnL gain.
-- Parameters: Depth 6, Estimators 150 (Ultimate Gen 5 Specs)
+- Parameters: Depth 5, Estimators 100 (Stable Gen 5 Specs)
+
 
 
 
 **Note on Hyperparameters:**
-We have upgraded to **Max Depth 6** and **150 Estimators** for Gen-5. This increased model capacity allows for better feature extraction from the expanded 956-ticker dataset (over 1M records), directly targeting higher Win Rates and better Win/Loss ratios.
+We have standardized on **Max Depth 5** and **100 Estimators** for Gen-5. This provides a balanced model capacity that prevents overfitting while still extracting meaningful alpha from the expanded 956-ticker dataset (over 1M records), directly targeting higher Win Rates and better Win/Loss ratios.
+
 
 
 
@@ -389,7 +391,8 @@ Based on this analysis, Gen-5 optimization targets:
 1. **Warm start from Gen-4** - best foundation (Sharpe 17.64, Sortino 58.72)
 2. **Target Win/Loss ratio improvement** - from 1.79x to 2.2x+ (Gen 4 weakness was low W/L ratio; Gen 2 was historical best at 1.97x)
 3. **Maintain Gen-4's stability** - keep low drawdown and high Sortino.
-4. **Ultimate Specs** - Deeper trees (Depth 6) and more estimators (150) to capture complex alpha.
+4. **Stable Specs** - Depth 5 and 100 estimators to ensure reliable generalization.
+
 5. **Combined Score Focus** - 40% win rate + 60% W/L ratio (prioritize absolute PnL quality).
 6. **Tighten screening** - Price > 200, Volume > 2M, Value > 2B to filter high-noise tickers.
 
@@ -404,7 +407,8 @@ Expected Gen-5 results: 420%+ return, 2.2x+ W/L ratio, Sortino > 60, max drawdow
 
 2. **Features**: 46 hardcoded features (returns, volatility, technical indicators, volume, calendar)
 3. **Target**: 5-day forward return direction (binary classification)
-4. **Model**: Single global XGBoost with 150 trees, depth 6, learning rate 0.1 (Gen-5 Ultimate)
+4. **Model**: Single global XGBoost with 100 trees, depth 5, learning rate 0.1 (Gen-5 Stable)
+
 
 
 5. **Training**: Pooled data from all tickers, noise filtering (50% removal), magnitude weighting (w = 1 + |r|×10), warm start from previous champion

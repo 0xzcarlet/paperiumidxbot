@@ -51,9 +51,10 @@ class MLConfig:
     # Prediction target (aligned with max_holding_days for day trading)
     target_horizon: int = 5  # Predict 5-day forward return (matches max hold)
     
-    # XGBoost parameters (Gen 5 Ultimate Specs)
-    n_estimators: int = 150
-    max_depth: int = 6
+    # XGBoost parameters (Conservative Defaults)
+    n_estimators: int = 100
+    max_depth: int = 5
+
     learning_rate: float = 0.1
 
     min_child_weight: int = 3

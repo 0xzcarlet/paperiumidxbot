@@ -27,19 +27,22 @@ def main():
     parser.add_argument('--train-window', type=str, default='max', help='Training window in trading days or "max"')
     parser.add_argument('--target', type=float, default=0.85, help='Target Combined Score (0.0 to 1.0)')
     # Gen 5 Ultimate Specs
-    parser.add_argument('--max-depth', type=int, default=6, help='XGBoost max tree depth (Gen 5: 6)')
-    parser.add_argument('--n-estimators', type=int, default=150, help='Number of boosting rounds (Gen 5: 150)')
+    parser.add_argument('--max-depth', type=int, default=5, help='XGBoost max tree depth (Conservative: 5)')
+    parser.add_argument('--n-estimators', type=int, default=100, help='Number of boosting rounds (Conservative: 100)')
+
     parser.add_argument('--force', action='store_true', help='Replace champion if better.')
     parser.add_argument('--max-iter', type=int, default=10, help='Maximum optimization iterations')
     parser.add_argument('--gpu', action='store_true', help='Use GPU acceleration')
 
     args = parser.parse_args()
     
-    # Update config with GPU setting
-    if args.gpu:
-        config.ml.use_gpu = True
+    # Update config with CLI args
+    config.ml.use_gpu = args.gpu
+    config.ml.max_depth = args.max_depth
+    config.ml.n_estimators = args.n_estimators
     
     # Process 'max' arguments
+
     if args.days == 'max' or args.train_window == 'max':
         conn = sqlite3.connect(config.data.db_path)
         df_dates = pd.read_sql("SELECT MIN(date), MAX(date) FROM prices", conn)

@@ -62,13 +62,17 @@ class TradingModel:
             'max_depth': self.max_depth,
             'learning_rate': self.learning_rate,
             'min_child_weight': self.min_child_weight,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'subsample': 0.7,
+            'colsample_bytree': 0.7,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
+            'gamma': 0.1,
             'objective': 'binary:logistic',
             'eval_metric': 'logloss',
             'random_state': 42,
             'n_jobs': -1
         }
+
         
         if self.use_gpu:
             import sys
@@ -322,7 +326,9 @@ class TradingModel:
         # Save XGBoost model natively (JSON) to avoid version mismatch warnings
         if self.model is not None:
             xgb_path = path.replace('.pkl', '.json')
-            self.model.save_model(xgb_path)
+            # Use the booster's save_model to avoid sklearn wrapper metadata issues
+            self.model.get_booster().save_model(xgb_path)
+
         
         logger.info(f"Model saved to {path} (metadata) and {xgb_path} (booster)")
     

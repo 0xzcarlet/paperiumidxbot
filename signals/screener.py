@@ -19,7 +19,8 @@ class Screener:
     def __init__(self, config=None):
         self.min_price = 200  # Increased from 50 to filter penny stocks
         self.min_volume = 2_000_000  # Increased from 1M to 2M
-        self.min_value = 2_000_000_000 # 2 Billion IDR daily transaction value
+        self.min_value = 5_000_000_000 # 5 Billion IDR daily transaction value
+
         
     def screen_stocks(self, data_map: Dict[str, pd.DataFrame]) -> List[str]:
         """
