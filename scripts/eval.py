@@ -587,8 +587,8 @@ class MLBacktest:
                             prediction_score = 0.0
                         max_seen_score = max(max_seen_score, prediction_score)
 
-                        # Logic for buy signal (conviction threshold)
-                        if prediction_score > 0.15:
+                        # Logic for buy signal (conviction threshold - Gen 4 value)
+                        if prediction_score > 0.1:
                             ticker_day = day_data[day_data['ticker'] == ticker].iloc[0]
 
                             candidates.append({
