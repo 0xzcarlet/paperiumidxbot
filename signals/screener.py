@@ -17,8 +17,9 @@ class Screener:
     """
     
     def __init__(self, config=None):
-        self.min_price = 50  # No penny stocks below 50
-        self.min_volume = 1_000_000  # Minimum liquidity
+        self.min_price = 200  # Increased from 50 to filter penny stocks
+        self.min_volume = 2_000_000  # Increased from 1M to 2M
+        self.min_value = 2_000_000_000 # 2 Billion IDR daily transaction value
         
     def screen_stocks(self, data_map: Dict[str, pd.DataFrame]) -> List[str]:
         """
@@ -43,10 +44,11 @@ class Screener:
         Check if a single stock meets screening criteria.
         
         Criteria:
-        1. Liquidity: Average volume > threshold
-        2. Trend: Price > EMA 200 (Long term uptrend)
-        3. Momentum: RSI > 50 (Positive momentum)
-        4. Volatility: ATR > 1% of price (Enough movement to trade)
+        1. Liquidity: Avg Vol > 2M AND Avg Value > 2B IDR
+        2. Price: > 200
+        3. Trend: Price > EMA 200 (Long term uptrend)
+        4. Momentum: RSI > 50 (Positive momentum)
+        5. Volatility: ATR > 1% of price (Enough movement to trade)
         """
         if df.empty or len(df) < 200:
             return False
@@ -63,13 +65,19 @@ class Screener:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if avg_vol < self.min_volume:
                 return False
+
+            # 3. Transaction Value Check (Approximate)
+            # Volume * Price > 2 Billion
+            avg_val = avg_vol * latest['close']
+            if avg_val < self.min_value:
+                return False
             
-            # 3. Trend Check (Price > EMA 200 is visually powerful)
+            # 4. Trend Check (Price > EMA 200 is visually powerful)
             ema200 = df['close'].ewm(span=200).mean().iloc[-1]
             if latest['close'] < ema200:
                 return False
                 
-            # 4. Momentum Check (RSI > 50)
+            # 5. Momentum Check (RSI > 50)
             # Calculate simple RSI if not present
             if 'rsi' not in df.columns:
                 delta = df['close'].diff()
@@ -84,7 +92,7 @@ class Screener:
             if current_rsi < 50:
                 return False
                 
-            # 5. Volatility Potential (ATR > 1% of price)
+            # 6. Volatility Potential (ATR > 1% of price)
             # We want stocks that move, not dead ones
             if 'atr' not in df.columns:
                 high_low = df['high'] - df['low']
@@ -104,3 +112,4 @@ class Screener:
         except Exception as e:
             logger.debug(f"Screening failed for {ticker}: {e}")
             return False
+

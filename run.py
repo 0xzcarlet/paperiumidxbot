@@ -63,8 +63,9 @@ def setup_menu():
     
     console.print("\n[dim]Prepare your environment and sync market action[/dim]\n")
     console.print("1. [bold cyan]Clean Universe[/bold cyan] (Filter illiquid/suspended stocks)")
-    console.print("2. [bold magenta]Sync Data[/bold magenta] (Fetch 2 years of history via YF)")
+    console.print("2. [bold magenta]Sync Data[/bold magenta] (Fetch 5 years of history via YF)")
     console.print("B. Back to Main Menu")
+
     
     choice = Prompt.ask("\nSelect setup action", choices=["1", "2", "B", "b"], default="1")
     

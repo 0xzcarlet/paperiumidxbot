@@ -9,13 +9,12 @@ import argparse
 import time
 from datetime import datetime, timedelta
 import pandas as pd
-import sqlite3 # Added for 'max' argument processing
+import sqlite3
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import config
-from scripts.eval import MLBacktest # Changed from ml_backtest
-# Removed: from scripts.auto_train import AutoTrainer
+from scripts.eval import MLBacktest
 from rich.console import Console
 
 console = Console()
@@ -27,9 +26,16 @@ def main():
     parser.add_argument('--target', type=float, default=0.85, help='Target combined score (Win Rate + W/L Ratio, 0.0 to 1.0)')
     parser.add_argument('--force', action='store_true', help='Replace champion if better. If False, saves with a new name.')
     parser.add_argument('--max-iter', type=int, default=5, help='Maximum optimization iterations')
-    parser.add_argument('--max-depth', type=int, default=5, help='XGBoost max tree depth')
-    parser.add_argument('--n-estimators', type=int, default=100, help='Number of boosting rounds')
+    
+    # Gen 5 Defaults
+    parser.add_argument('--max-depth', type=int, default=6, help='XGBoost max tree depth (Gen 5 Default: 6)')
+    parser.add_argument('--n-estimators', type=int, default=150, help='Number of boosting rounds (Gen 5 Default: 150)')
     parser.add_argument('--learning-rate', type=float, default=0.1, help='XGBoost learning rate')
+    
+    # Trading Params (Defaults match Gen 4/Eval.py defaults)
+    parser.add_argument('--stop-loss', type=float, default=0.05, help='Stop loss percentage (default: 0.05)')
+    parser.add_argument('--take-profit', type=float, default=0.08, help='Take profit percentage (default: 0.08)')
+    
     parser.add_argument('--gpu', action='store_true', help='Use GPU acceleration (MPS on Mac, CUDA elsewhere)')
 
     args = parser.parse_args()
@@ -49,30 +55,36 @@ def main():
         total_days = (db_max - db_min).days
         
         if args.days == 'max':
-            eval_days = min(total_days // 4, 365) # Max 1 year for eval
+            # Use 1 year if we have at least 1.5 years of history
+            if total_days >= 365 * 1.5:
+                eval_days = 365
+            else:
+                eval_days = max(30, total_days // 3)
             console.print(f"[dim]Auto-setting eval days to {eval_days} (max window)[/dim]")
         else:
             eval_days = int(args.days)
             
         if args.train_window == 'max':
-            train_window = min(total_days, 252 * 3) # Max 3 years for training
+            # Use at least 252 days if possible, or up to 3 years
+            train_window = min(total_days - eval_days, 252 * 5)
             console.print(f"[dim]Auto-setting train window to {train_window} (max window)[/dim]")
         else:
             train_window = int(args.train_window)
+
     else:
         eval_days = int(args.days)
         train_window = int(args.train_window)
 
-    # Removed: trainer = AutoTrainer()
-    # Removed: if args.force:
-    # Removed:     console.print(f"[yellow]Force mode enabled. Ignoring existing {args.type} champion metrics.[/yellow]")
-    # Removed:     trainer.champion_metadata[args.type]['win_rate'] = 0.0
-
-    console.print(f"[bold cyan]Starting Targeted Training for XGBOOST[/bold cyan]") # Changed from args.type.upper()
-    console.print(f"Target Win Rate: [green]{args.target:.1%}[/green]")
+    console.print(f"[bold cyan]Starting Targeted Training for XGBOOST (Gen 5)[/bold cyan]")
+    console.print(f"Target Score: [green]{args.target:.1%}[/green] | Max Iter: {args.max_iter}")
+    console.print(f"Params: Depth={args.max_depth}, Est={args.n_estimators}, SL={args.stop_loss:.1%}, TP={args.take_profit:.1%}")
 
     # Phase 0: Data Prep
     backtester = MLBacktest()
+    # Apply CLI args for SL/TP
+    backtester.stop_loss_pct = args.stop_loss
+    backtester.take_profit_pct = args.take_profit
+
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=eval_days)).strftime('%Y-%m-%d') # Using eval_days
     
@@ -102,11 +114,22 @@ def main():
         iteration += 1
         console.print(f"\n[bold magenta]Iteration {iteration}/{args.max_iter}[/bold magenta]")
         
+        # Initialize backtester with retrain=True
         bt = MLBacktest(model_type='xgboost', retrain=True)
-        if iteration > 1:
-            # Optimized for better Win/Loss ratio: tighter stops, wider targets
-            bt.stop_loss_pct = 0.025 + (iteration * 0.003)   # 2.5% → 4.0%
-            bt.take_profit_pct = 0.10 - (iteration * 0.008)  # 10% → 6.4%
+        
+        # Apply Fixed Params (Stable Gen 5 approach)
+        bt.stop_loss_pct = args.stop_loss
+        bt.take_profit_pct = args.take_profit
+        
+        # Pass hyperparams down to config via temporary override logic if needed, 
+        # but standard way is usually via config object. 
+        # Assuming MLBacktest reads from config, we update config implicitly or assuming defaults are handled.
+        # Actually, MLBacktest uses config.ml. Let's update `config.ml` dynamically?
+        # NOTE: logic in eval.py uses 'config.ml'. config is imported from config.py.
+        # We should update config.ml hyperparameters here if we want them to take effect.
+        config.ml.xgboost.max_depth = args.max_depth
+        config.ml.xgboost.n_estimators = args.n_estimators
+        config.ml.xgboost.learning_rate = args.learning_rate
             
         results = bt.run(start_date=start_date, end_date=end_date, train_window=train_window, pre_loaded_data=featured_data)
         
@@ -120,7 +143,8 @@ def main():
             wl_ratio = avg_win / avg_loss if avg_loss > 0 else 0
             
             # Combined score: prioritize W/L ratio (60%) + win rate (40%)
-            wl_ratio_normalized = min(wl_ratio / 2.5, 1.0)  # Target 2.5x W/L ratio
+            # Capping W/L benefit at 2.5x to prevent chasing outliers
+            wl_ratio_normalized = min(wl_ratio / 2.5, 1.0) 
             combined_score = (effective_wr * 0.4) + (wl_ratio_normalized * 0.6)
             
             console.print(f"  Win Rate: [bold]{effective_wr:.1%}[/bold]")
@@ -151,6 +175,8 @@ def main():
                 # Compare using combined score instead of just win rate
                 current_best_score = metadata.get('xgboost', {}).get('combined_score', current_best_wr)
                 
+                # Check if we should update champion
+                # If force is true, we update if it's better
                 if combined_score > current_best_score:
                     console.print(f"  [green]Champion Updated! Score: {current_best_score:.1%} -> {combined_score:.1%}[/green]")
                     save_path = "models/global_xgb_champion.pkl"
@@ -165,7 +191,9 @@ def main():
                         'hyperparams': {
                             'max_depth': int(args.max_depth),
                             'n_estimators': int(args.n_estimators),
-                            'learning_rate': float(args.learning_rate)
+                            'learning_rate': float(args.learning_rate),
+                            'stop_loss': float(args.stop_loss),
+                            'take_profit': float(args.take_profit)
                         }
                     }
                     with open(metadata_path, 'w') as f:

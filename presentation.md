@@ -4,7 +4,7 @@ This document explains the exact technical implementation of Paperium, an automa
 
 ## Data Foundation: SQLite Storage and 5-Year Lookback
 
-The system starts by ingesting OHLCV (Open, High, Low, Close, Volume) data from Yahoo Finance for 480 tickers in the IHSG universe. Historical data spans 5 years (`lookback_days: 1825`) and is stored in a SQLite database at `data/ihsg_trading.db`. The universe includes liquid stocks from IDX80, Kompas100, and growth sectors, defined in [`config.py:13-481`](file:///Users/vexeee/Documents/project/paperium/config.py#L13-L481).
+The system starts by ingesting OHLCV (Open, High, Low, Close, Volume) data from Yahoo Finance for 956 tickers in the IHSG universe. Historical data spans 5 years (`lookback_days: 1825`) and is stored in a SQLite database at `data/ihsg_trading.db`. The universe includes liquid stocks from IDX80, Kompas100, and growth sectors.
 
 ```python
 # config.py - Data Configuration
@@ -236,8 +236,9 @@ Before scoring with XGBoost, stocks must pass liquidity and quality filters in [
 if len(ticker_hist) < 200:
     continue  # Need at least 200 days of data
 
-if not self.screener._check_criteria(ticker_hist, ticker):
-    continue  # Failed liquidity/quality checks
+if latest['close'] < 200 or avg_vol < 2_000_000 or (avg_vol * latest['close']) < 2_000_000_000:
+    continue  # Tightened Gen 5 Liquidity Filters (Price > 200, Vol > 2M, Value > 2B)
+
 ```
 
 Only stocks passing the screener get ML predictions.
@@ -317,10 +318,9 @@ $$\frac{W}{L} = \frac{|\text{Avg Win}|}{|\text{Avg Loss}|}$$
 **Rationale**: High win rate alone doesn't guarantee profitability. A model with 90% win rate but 1.5x W/L ratio (small wins, large losses) will underperform a model with 85% win rate and 2.5x W/L ratio (larger wins relative to losses).
 
 **Iteration Parameters (Gen-5):**
-- Iteration 1: SL=2.5%, TP=10% (wide targets for big wins)
-- Iteration 2: SL=2.8%, TP=9.2%
-- Iteration 3: SL=3.1%, TP=8.4%
-- ...iterates to SL=4%, TP=6.4%
+- Iteration 1: SL=5%, TP=8% (Stable Gen 5 Target)
+- Fixed Parameters: Depth 6, Estimators 150
+
 
 **Hyperparameter Tuning:**
 - Max depth: 6 (vs Gen-4's 5) - captures more complex patterns
@@ -385,16 +385,19 @@ On 2024-12-27, all 4 model generations (Gen-1 through Gen-4) were backtested ove
 
 Based on this analysis, Gen-5 optimization targets:
 1. **Warm start from Gen-4** - best foundation (Sharpe 17.64, Sortino 58.72)
-2. **Target Win/Loss ratio improvement** - from 1.79x to 2.2x+ (learn from Gen-2's 1.97x)
+2. **Target Win/Loss ratio improvement** - from 1.79x to 2.2x+ (Gen 4 weakness was low W/L ratio; Gen 2 was historical best at 1.97x)
 3. **Maintain Gen-4's stability** - keep low drawdown and high Sortino
 4. **Differentiate through hyperparameters** - deeper trees (depth 6), more estimators (150)
 5. **Optimize combined score** - 40% win rate + 60% W/L ratio (prioritize trade quality)
+6. **Tighten screening** - Price > 200, Volume > 2M, Value > 2B to handle the expanded 956-ticker universe.
 
 Expected Gen-5 results: 420%+ return, 2.2x+ W/L ratio, Sortino > 60, max drawdown < 1%.
 
+
 ## Summary: The Complete Pipeline
 
-1. **Data**: 480 IHSG tickers, 5 years of OHLCV data in SQLite
+1. **Data**: 956 IHSG tickers, 5 years of OHLCV data in SQLite
+
 2. **Features**: 46 hardcoded features (returns, volatility, technical indicators, volume, calendar)
 3. **Target**: 5-day forward return direction (binary classification)
 4. **Model**: Single global XGBoost with 100 trees, depth 5, learning rate 0.1 (Gen-4), evolving to depth 6 + 150 trees (Gen-5)

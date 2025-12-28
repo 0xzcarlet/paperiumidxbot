@@ -19,11 +19,12 @@ def sync_data():
     fetcher = DataFetcher(config.data.stock_universe)
     
     total_tickers = len(config.data.stock_universe)
-    console.print(f"Syncing [bold]{total_tickers}[/bold] tickers (2 years history)...")
+    lookback = config.data.lookback_days
+    console.print(f"Syncing [bold]{total_tickers}[/bold] tickers ({lookback} days history)...")
     
     # Use fetch_batch but track progress
     # fetch_batch uses yfinance's internal progress bar, but we'll wrap it to be sure
-    data = fetcher.fetch_batch(days=730)
+    data = fetcher.fetch_batch(days=lookback)
     
     if not data.empty:
         console.print(f"Upserting {len(data)} records to database...")
@@ -31,6 +32,7 @@ def sync_data():
         console.print(f"[bold green]✓ Database Sync Complete. {count} records updated.[/bold green]")
     else:
         console.print("[bold red]✕ Data fetch failed or returned empty.[/bold red]")
+
 
 if __name__ == "__main__":
     sync_data()
