@@ -30,8 +30,13 @@ def main():
     parser.add_argument('--max-depth', type=int, default=5, help='XGBoost max tree depth')
     parser.add_argument('--n-estimators', type=int, default=100, help='Number of boosting rounds')
     parser.add_argument('--learning-rate', type=float, default=0.1, help='XGBoost learning rate')
+    parser.add_argument('--gpu', action='store_true', help='Use GPU acceleration (MPS on Mac, CUDA elsewhere)')
 
     args = parser.parse_args()
+    
+    # Update config with GPU setting
+    if args.gpu:
+        config.ml.use_gpu = True
     
     # Process 'max' arguments
     if args.days == 'max' or args.train_window == 'max':

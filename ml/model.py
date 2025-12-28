@@ -39,6 +39,7 @@ class TradingModel:
             self.max_depth = config.max_depth
             self.learning_rate = config.learning_rate
             self.min_child_weight = config.min_child_weight
+            self.use_gpu = getattr(config, 'use_gpu', False)
         else:
             self.training_window = 252
             self.min_training_samples = 40
@@ -46,6 +47,7 @@ class TradingModel:
             self.max_depth = 5
             self.learning_rate = 0.1
             self.min_child_weight = 3
+            self.use_gpu = False
         
         self.feature_engineer = FeatureEngineer(config)
         self.model = None
@@ -55,18 +57,31 @@ class TradingModel:
     
     def _create_model(self) -> xgb.XGBClassifier:
         """Create XGBoost classifier with configured parameters."""
-        return xgb.XGBClassifier(
-            n_estimators=self.n_estimators,
-            max_depth=self.max_depth,
-            learning_rate=self.learning_rate,
-            min_child_weight=self.min_child_weight,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective='binary:logistic',
-            eval_metric='logloss',
-            random_state=42,
-            n_jobs=-1
-        )
+        params = {
+            'n_estimators': self.n_estimators,
+            'max_depth': self.max_depth,
+            'learning_rate': self.learning_rate,
+            'min_child_weight': self.min_child_weight,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'binary:logistic',
+            'eval_metric': 'logloss',
+            'random_state': 42,
+            'n_jobs': -1
+        }
+        
+        if self.use_gpu:
+            import sys
+            # Check for MPS stability - Fallback to CPU on Mac to avoid binary crash
+            if sys.platform == "darwin":
+                logger.warning("XGBoost MPS (Metal) acceleration can be unstable on some Mac environments. Using high-performance CPU ('hist') instead.")
+                params['tree_method'] = 'hist'
+                params['device'] = 'cpu'
+            else:
+                params['tree_method'] = 'hist'
+                params['device'] = 'cuda'
+                
+        return xgb.XGBClassifier(**params)
     
     def train(
         self, 

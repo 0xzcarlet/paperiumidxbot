@@ -124,7 +124,8 @@ def train_menu():
     n_estimators = Prompt.ask("  Number of estimators", default="150")
     learning_rate = Prompt.ask("  Learning rate", default="0.1")
     
-    force = Confirm.ask("\nReplace champion if better?", default=True)
+    use_gpu = Confirm.ask("\nUse GPU acceleration?", default=True)
+    force = Confirm.ask("Replace champion if better?", default=True)
     
     cmd = ["uv", "run", "python", "scripts/train.py",
            "--target", target,
@@ -137,6 +138,9 @@ def train_menu():
     
     if force:
         cmd.append("--force")
+    
+    if use_gpu:
+        cmd.append("--gpu")
     
     console.print(f"\n[yellow]Executing: {' '.join(cmd)}[/yellow]\n")
     subprocess.run(cmd)

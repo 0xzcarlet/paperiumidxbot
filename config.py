@@ -56,6 +56,7 @@ class MLConfig:
     max_depth: int = 5
     learning_rate: float = 0.1
     min_child_weight: int = 3
+    use_gpu: bool = False
     
     # Feature settings
     feature_lags: List[int] = field(default_factory=lambda: [1, 2, 3, 5, 10, 20])
