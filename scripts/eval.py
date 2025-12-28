@@ -14,9 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import logging
 import warnings
+import time
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -41,6 +42,16 @@ from signals.screener import Screener
 logging.basicConfig(level=logging.WARNING)
 console = Console()
 
+# Global timer for logging
+_start_time = time.time()
+
+def log(msg: str):
+    """Log with timestamp and duration."""
+    elapsed = time.time() - _start_time
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+    console.print(f"[dim][{mins:02d}:{secs:02d}][/dim] {msg}")
+
 
 class MLBacktest:
     """
@@ -52,7 +63,7 @@ class MLBacktest:
         """
         Args:
             model_type: 'xgboost'
-            retrain: If True, will train models before backtesting. 
+            retrain: If True, will train models before backtesting.
                      If False, will load existing champion models or reject.
             custom_model_path: Optional custom path to model file (for parallel execution)
         """
@@ -62,7 +73,7 @@ class MLBacktest:
         self.retrain = retrain
         self.custom_model_path = custom_model_path
         self.screener = Screener(config)
-        
+
         # Trading parameters
         self.initial_capital = 100_000_000
         self.max_positions = 10
@@ -71,9 +82,12 @@ class MLBacktest:
         self.stop_loss_pct = 0.05
         self.take_profit_pct = 0.08
         self.max_hold_days = 5
-        
+
         # Model (Global XGBoost)
         self.global_xgb = None
+
+        # Cache for pooled training data (avoids re-pooling on each iteration)
+        self.pooled_train_data: Optional[Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]] = None
     
     def run(self, start_date: str, end_date: str, train_window: int = 252, pre_loaded_data: Optional[pd.DataFrame] = None):
         """
@@ -91,47 +105,46 @@ class MLBacktest:
             f"[dim]Model: {self.model_type.upper()}[/dim]",
             border_style="blue"
         ))
-        
+
         # Load data
         if pre_loaded_data is not None:
-            console.print("\n[yellow]Using pre-loaded featured data...[/yellow]")
+            log("[yellow]Using pre-loaded featured data...[/yellow]")
             all_data = pre_loaded_data
         else:
-            console.print("\n[yellow]Loading data...[/yellow]")
+            log("[yellow]Loading data...[/yellow]")
             all_data = self._load_data(start_date, end_date, train_window)
-        
+
         if all_data.empty:
-            console.print("[red]No data available[/red]")
+            log("[red]No data available[/red]")
             return
-        
+
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', category=RuntimeWarning)
-                
+
                 if self.retrain:
                     # Pre-train models
-                    console.print("[yellow]Training ML models...[/yellow]")
+                    log("[yellow]Training ML models...[/yellow]")
                     trained_counts = self._train_models(all_data, start_date, train_window)
-                    
+
                     if trained_counts['xgb'] == 0:
-                        console.print("[red]Critical: XGBoost model was not trained successfuly. Aborting simulation.[/red]")
+                        log("[red]Critical: XGBoost model was not trained successfully. Aborting simulation.[/red]")
                         return
                 else:
                     # Evaluation mode: Load existing models
-                    console.print("[yellow]Loading existing ML models for evaluation...[/yellow]")
+                    log("[yellow]Loading existing ML models for evaluation...[/yellow]")
                     if not self._load_models():
-                        console.print("[bold red]REJECTED: Required models do not exist.[/bold red]")
+                        log("[bold red]REJECTED: Required models do not exist.[/bold red]")
                         console.print("Please train your models first using 'python scripts/train_model.py'.")
                         return
-                    
+
                 # Run simulation
-                import time
-                console.print("[yellow]Running simulation...[/yellow]")
+                log("[yellow]Running simulation...[/yellow]")
                 sim_start = time.time()
                 results = self._simulate(all_data, start_date, end_date, is_pre_featured=(pre_loaded_data is not None))
                 sim_time = time.time() - sim_start
-                console.print(f"[dim]Simulation time: {sim_time:.2f}s[/dim]")
-                
+                log(f"[green]Simulation completed in {sim_time:.2f}s[/green]")
+
                 # Display results
                 self._display_results(results)
             
@@ -195,44 +208,56 @@ class MLBacktest:
     def _train_models(self, all_data: pd.DataFrame, start_date: str, train_window: int):
         """Train global models on pooled historical data."""
         start = pd.to_datetime(start_date)
-        
-        # Pool training data from all tickers
-        pool_X = []
-        pool_y = []
-        pool_returns = []
-        
-        console.print(f"  Pooling training data from {all_data['ticker'].nunique()} tickers...")
-        
-        for ticker in all_data['ticker'].unique():
-            ticker_data = all_data[all_data['ticker'] == ticker].copy()
-            ticker_data = ticker_data.sort_values('date')
-            
-            # Get data before start_date
-            train_data = ticker_data[ticker_data['date'] < start]
-            if len(train_data) < 40:
-                continue
-                
-            # Take window
-            train_data = train_data.tail(min(train_window, len(train_data)))
-            train_data = self._add_features(train_data)
-            
-            # Use FeatureEngineer to get X, y, returns
-            temp_model = TradingModel(config.ml)
-            X, y, returns = temp_model.feature_engineer.create_features(
-                train_data, 
-                target_horizon=temp_model.feature_engineer.target_horizon,
-                include_raw_return=True
-            )
-            pool_X.append(X)
-            pool_y.append(y)
-            pool_returns.append(returns)
-            
-        if not pool_X:
-            return {'xgb': 0}
-            
-        X_combined = pd.concat(pool_X)
-        y_combined = pd.concat(pool_y)
-        ret_combined = pd.concat(pool_returns)
+
+        # Check cache first
+        if self.pooled_train_data is not None:
+            log("  [green]Using cached pooled training data[/green]")
+            X_combined, y_combined, ret_combined = self.pooled_train_data
+        else:
+            # Pool training data from all tickers
+            pool_X = []
+            pool_y = []
+            pool_returns = []
+
+            log(f"  Pooling training data from {all_data['ticker'].nunique()} tickers...")
+            pool_start = time.time()
+
+            for ticker in all_data['ticker'].unique():
+                ticker_data = all_data[all_data['ticker'] == ticker].copy()
+                ticker_data = ticker_data.sort_values('date')
+
+                # Get data before start_date
+                train_data = ticker_data[ticker_data['date'] < start]
+                if len(train_data) < 40:
+                    continue
+
+                # Take window
+                train_data = train_data.tail(min(train_window, len(train_data)))
+                train_data = self._add_features(train_data)
+
+                # Use FeatureEngineer to get X, y, returns
+                temp_model = TradingModel(config.ml)
+                X, y, returns = temp_model.feature_engineer.create_features(
+                    train_data,
+                    target_horizon=temp_model.feature_engineer.target_horizon,
+                    include_raw_return=True
+                )
+                pool_X.append(X)
+                pool_y.append(y)
+                pool_returns.append(returns)
+
+            if not pool_X:
+                return {'xgb': 0}
+
+            X_combined = pd.concat(pool_X)
+            y_combined = pd.concat(pool_y)
+            ret_combined = pd.concat(pool_returns)
+
+            pool_time = time.time() - pool_start
+            log(f"  [green]Pooling completed in {pool_time:.2f}s[/green]")
+
+            # Cache for next iteration
+            self.pooled_train_data = (X_combined, y_combined, ret_combined)
         
         # Clean data for XGBoost (remove any remaining NaN or Inf)
         valid_idx = X_combined.replace([np.inf, -np.inf], np.nan).dropna().index
@@ -244,29 +269,29 @@ class MLBacktest:
         # Discard 50% of "boring" days (|return| < 0.5%) to reduce noise bias
         noise_mask = (ret_combined.abs() < 0.005)
         keep_mask = ~noise_mask
-        
+
         # Randomly pick 50% of noise to keep
         if noise_mask.any():
             noise_indices = ret_combined[noise_mask].index
             keep_noise_indices = np.random.choice(
-                noise_indices, 
-                size=len(noise_indices) // 2, 
+                noise_indices,
+                size=len(noise_indices) // 2,
                 replace=False
             )
             keep_mask.loc[keep_noise_indices] = True
-            
+
         X_combined = X_combined[keep_mask]
         y_combined = y_combined[keep_mask]
         ret_combined = ret_combined[keep_mask]
-        
+
         # --- TRAINING REFINEMENT: MAGNITUDE WEIGHTING ---
         # Scale importance by move size: Weight = 1.0 + |return| * 10
         sample_weights = 1.0 + (ret_combined.abs() * 10.0)
-        
-        console.print(f"  Total training samples after refinement: {len(X_combined)}")
-        
+
+        log(f"  Total training samples after refinement: {len(X_combined)}")
+
         if len(X_combined) < 100:
-            console.print("[red]Critical: Not enough training samples pooled.[/red]")
+            log("[red]Critical: Not enough training samples pooled.[/red]")
             return {'xgb': 0}
 
         # Train Global XGBoost
@@ -286,37 +311,38 @@ class MLBacktest:
                             # Check feature compatibility
                             old_features = set(temp_xgb.feature_names) if temp_xgb.feature_names else set()
                             new_features = set(X_combined.columns.tolist())
-                            
+
                             if old_features == new_features:
                                 base_model = temp_xgb.model
-                                console.print(f"  → Loaded XGB champion for Warm Start")
+                                log(f"  → Loaded XGB champion for Warm Start")
                             else:
-                                console.print(f"  [yellow]→ Feature mismatch detected (old: {len(old_features)}, new: {len(new_features)}). Training fresh model.[/yellow]")
+                                log(f"  [yellow]→ Feature mismatch detected (old: {len(old_features)}, new: {len(new_features)}). Training fresh model.[/yellow]")
                     except Exception as load_err:
-                        console.print(f"  [yellow]→ Could not load XGB champion for warm start: {load_err}[/yellow]")
+                        log(f"  [yellow]→ Could not load XGB champion for warm start: {load_err}[/yellow]")
 
                 self.global_xgb.model = self.global_xgb._create_model()
                 # Remove deprecated param
                 if 'use_label_encoder' in self.global_xgb.model.get_params():
                     self.global_xgb.model.set_params(use_label_encoder=False)
-                
+
+                train_start = time.time()
                 if base_model is not None:
                     # Incremental learning with weights
                     self.global_xgb.model.fit(
-                        X_combined, y_combined, 
+                        X_combined, y_combined,
                         sample_weight=sample_weights,
                         xgb_model=base_model.get_booster()
                     )
                 else:
                     # Fresh training with weights
                     self.global_xgb.model.fit(
-                        X_combined, y_combined, 
+                        X_combined, y_combined,
                         sample_weight=sample_weights
                     )
-                    
-                console.print("  ✓ Trained Global XGBoost model")
+                train_time = time.time() - train_start
+                log(f"  [green]✓ Trained Global XGBoost model in {train_time:.2f}s[/green]")
             except Exception as e:
-                console.print(f"  [red]✗[/red] Global XGBoost training failed: {e}")
+                log(f"  [red]✗ Global XGBoost training failed: {e}[/red]")
                 self.global_xgb = None
 
         return {
@@ -337,13 +363,14 @@ class MLBacktest:
         """Run simulation with pre-calculated features for speed."""
         start = pd.to_datetime(start_date)
         end = pd.to_datetime(end_date)
-        
+
         if not is_pre_featured:
             # Pre-calculate features for all tickers
-            console.print("[yellow]Pre-calculating features for all tickers...[/yellow]")
+            log("[yellow]Pre-calculating features for all tickers...[/yellow]")
             ticker_groups = all_data.groupby('ticker')
             processed_data_list = []
-            
+
+            feat_start = time.time()
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
@@ -352,7 +379,7 @@ class MLBacktest:
                 TextColumn("•"),
                 TimeRemainingColumn(),
                 console=console,
-                refresh_per_second=2
+                refresh_per_second=10
             ) as progress:
 
                 task = progress.add_task("[cyan]Processing tickers...", total=all_data['ticker'].nunique())
@@ -363,22 +390,26 @@ class MLBacktest:
                     processed_data_list.append(group)
                     progress.update(task, advance=1)
 
-            
+
             all_data_feat = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
+            feat_time = time.time() - feat_start
+            log(f"[green]Feature calculation completed in {feat_time:.2f}s[/green]")
         else:
             all_data_feat = all_data
-        
+
         # Create a map for quick lookup of a ticker's full processed data
-        ticker_data_map = {ticker: group.set_index('date') for ticker, group in all_data_feat.groupby('ticker')}
+        log("[dim]Building ticker index maps...[/dim]")
+        ticker_data_map = {ticker: group.set_index('date').sort_index() for ticker, group in all_data_feat.groupby('ticker')}
 
         # Get all trading dates
         all_dates = sorted(all_data_feat[
             (all_data_feat['date'] >= start) & (all_data_feat['date'] <= end)
         ]['date'].unique())
-        
+
         # Pre-calculate batch scores for ML models
-        console.print("[yellow]Batch predicting ML scores for all tickers...[/yellow]")
+        log("[yellow]Batch predicting ML scores for all tickers...[/yellow]")
         xgb_scores = {}  # ticker -> Series of scores
+        pred_start = time.time()
         
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -388,8 +419,7 @@ class MLBacktest:
             TextColumn("•"),
             TimeRemainingColumn(),
             console=console,
-
-            refresh_per_second=2
+            refresh_per_second=10
         ) as progress:
             task = progress.add_task("[cyan]Predicting...", total=len(ticker_data_map))
 
@@ -423,30 +453,36 @@ class MLBacktest:
                             
                             xgb_scores[ticker] = pd.Series((probs - 0.5) * 2, index=X.index)
                     except Exception as e:
-                        console.print(f"  [red]✗[/red] XGBoost batch prediction failed for {ticker}: {e}")
-                
+                        log(f"  [red]✗ XGBoost batch prediction failed for {ticker}: {e}[/red]")
+
                 progress.update(task, advance=1)
 
-        
+        pred_time = time.time() - pred_start
+        log(f"[green]Prediction completed in {pred_time:.2f}s[/green]")
+
         # Log prediction stats
         all_xgb = pd.concat(xgb_scores.values()) if xgb_scores else pd.Series()
-        
+
         # Explicitly check for NaNs in scores
         if not all_xgb.empty and all_xgb.isna().any():
             raise ValueError("NaN detected in XGBoost predicted scores.")
-            
+
         if not all_xgb.empty:
-            console.print(f"  XGB scores dist: mean={all_xgb.mean():.3f}, max={all_xgb.max():.3f}, min={all_xgb.min():.3f}")
-        
-        console.print(f"  Simulating {len(all_dates)} trading days...")
-        
+            log(f"  XGB scores dist: mean={all_xgb.mean():.3f}, max={all_xgb.max():.3f}, min={all_xgb.min():.3f}")
+
+        log(f"  Simulating {len(all_dates)} trading days...")
+
+        # Pre-group data by date for fast lookups
+        log("[dim]Pre-grouping data by date for optimization...[/dim]")
+        date_grouped_data = {date: group for date, group in all_data_feat.groupby('date')}
+
         # Initialize
         cash = self.initial_capital
         positions = {}
         trades = []
         equity_curve = []
         max_seen_score = -1.0
-        
+
         with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
@@ -455,15 +491,14 @@ class MLBacktest:
             TextColumn("•"),
             TimeRemainingColumn(),
             console=console,
-
-            refresh_per_second=2
+            refresh_per_second=10
         ) as progress:
             task = progress.add_task("[cyan]Simulating...", total=len(all_dates))
 
 
-            
+
             for date in all_dates:
-                day_data = all_data_feat[all_data_feat['date'] == date]
+                day_data = date_grouped_data.get(date, pd.DataFrame())
                 
                 # Check exits
                 for ticker in list(positions.keys()):
@@ -516,40 +551,45 @@ class MLBacktest:
                 # Open new positions
                 if len(positions) < self.max_positions:
                     candidates = []
-                    
+
                     for ticker in day_data['ticker'].unique():
                         if ticker in positions:
                             continue
-                        
-                        # Get historical data for prediction (already has features)
-                        ticker_hist = all_data_feat[
-                            (all_data_feat['ticker'] == ticker) & 
-                            (all_data_feat['date'] <= date)
-                        ].tail(400) # Increased lookback to satisfy Screener (needs 200)
-                        
+
+                        # Use pre-indexed ticker_data_map for fast lookup
+                        if ticker not in ticker_data_map:
+                            continue
+
+                        ticker_indexed = ticker_data_map[ticker]
+                        # Get historical data up to current date using efficient .loc slicing
+                        ticker_hist = ticker_indexed.loc[:date].tail(400)
+
                         if len(ticker_hist) < 200:
                             continue
-                        
+
+                        # Reset index for screener (expects date as column)
+                        ticker_hist_reset = ticker_hist.reset_index()
+
                         # Apply Screener logic (Step 2 of workflow)
-                        if not self.screener._check_criteria(ticker_hist, ticker):
+                        if not self.screener._check_criteria(ticker_hist_reset, ticker):
                             continue
-                        
+
                         # Use batch-predicted XGB score
                         if ticker in xgb_scores and date in xgb_scores[ticker].index:
                             prediction_score = xgb_scores[ticker].loc[date]
                         else:
                             prediction_score = 0.0
                         max_seen_score = max(max_seen_score, prediction_score)
-                        
+
                         # Logic for buy signal (conviction threshold)
-                        if prediction_score > 0.15:  
+                        if prediction_score > 0.15:
                             ticker_day = day_data[day_data['ticker'] == ticker].iloc[0]
 
                             candidates.append({
                                 'ticker': ticker,
                                 'score': prediction_score,
                                 'close': ticker_day['close'],
-                                'atr': ticker_hist['atr'].iloc[-1] if 'atr' in ticker_hist.columns else ticker_day['close'] * 0.02
+                                'atr': ticker_hist_reset['atr'].iloc[-1] if 'atr' in ticker_hist_reset.columns else ticker_day['close'] * 0.02
                             })
                     
                     # Sort by score and take top N
@@ -595,8 +635,8 @@ class MLBacktest:
                 
                 equity_curve.append({'date': date, 'equity': equity})
                 progress.update(task, advance=1)
-        
-        console.print(f"  Max combined score seen during simulation: {max_seen_score:.4f}")
+
+        log(f"  Max combined score seen during simulation: {max_seen_score:.4f}")
         return self._calculate_metrics(trades, equity_curve)
     
     def _calculate_metrics(self, trades: List[Dict], equity_curve: List[Dict]) -> Dict:

@@ -6,6 +6,7 @@ Comprehensive analysis of a single ticker with signals, prediction, and recommen
 import sys
 import os
 import re
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -29,6 +30,16 @@ from signals.regime_detector import RegimeDetector, MarketRegime
 from strategy.position_sizer import PositionSizer
 
 console = Console()
+
+# Global timer for logging
+_start_time = time.time()
+
+def log(msg: str):
+    """Log with timestamp and duration."""
+    elapsed = time.time() - _start_time
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+    console.print(f"[dim][{mins:02d}:{secs:02d}][/dim] {msg}")
 
 
 def validate_ticker(ticker: str) -> str:
@@ -57,50 +68,71 @@ class StockAnalyzer:
         self.feature_engineer = FeatureEngineer(config.ml)
         self.position_sizer = PositionSizer(config.portfolio)
         self.regime_detector = RegimeDetector()
-        
+
         # Load XGBoost model
         self.model = None
         self.model_trained_date = None
         model_path = os.path.join("models", "global_xgb_champion.pkl")
         if os.path.exists(model_path):
+            model_load_start = time.time()
             self.model = TradingModel(config.ml)
             self.model.load(model_path)
             self.model_trained_date = self.model.last_trained
+            model_load_time = time.time() - model_load_start
+            log(f"[dim]✓ Loaded XGBoost champion model in {model_load_time:.3f}s[/dim]")
+        else:
+            log("[yellow]⚠ No XGBoost champion model found - ML predictions unavailable[/yellow]")
     
     def analyze(self, ticker: str, portfolio_value: Optional[float] = None):
         """Run comprehensive analysis on a single ticker."""
+        global _start_time
+        _start_time = time.time()  # Reset timer for this analysis
+
         if portfolio_value is None:
             portfolio_value = config.portfolio.total_value
-        
+
         # Validate and normalize ticker
         try:
             ticker = validate_ticker(ticker)
         except ValueError as e:
             console.print(f"[red]Error: {e}[/red]")
             return None
-        
+
         # Header
         self._print_header(ticker)
-        
+
         # Fetch data
+        log("[yellow]Fetching market data...[/yellow]")
+        fetch_start = time.time()
         price_data = self._fetch_data(ticker)
         if price_data is None:
             return None
-        
+        fetch_time = time.time() - fetch_start
+        log(f"[green]✓ Data fetched in {fetch_time:.2f}s[/green]")
+
         # Run all analyses
+        log("[yellow]Analyzing stock...[/yellow]")
+        analysis_start = time.time()
+
         basic_info = self._get_basic_info(ticker, price_data)
         technicals = self._get_technicals(price_data)
         ml_prediction = self._get_ml_prediction(price_data)
         signals = self._get_signals(price_data, ml_prediction)  # Pass ML prediction for 60% weight
         regime = self._get_market_regime()
         history = self._get_history(price_data)
-        
+
+        analysis_time = time.time() - analysis_start
+        log(f"[green]✓ Analysis completed in {analysis_time:.2f}s[/green]")
+
         # Generate and display comprehensive report
         self._display_report(
-            ticker, price_data, basic_info, technicals, 
+            ticker, price_data, basic_info, technicals,
             ml_prediction, signals, regime, history, portfolio_value
         )
-        
+
+        total_time = time.time() - _start_time
+        log(f"[green]✓ Total analysis time: {total_time:.2f}s[/green]")
+
         return {
             'ticker': ticker,
             'basic_info': basic_info,
@@ -122,23 +154,21 @@ class StockAnalyzer:
     
     def _fetch_data(self, ticker: str) -> pd.DataFrame:
         """Fetch price data from Yahoo Finance."""
-        console.print("\n[dim]Fetching market data...[/dim]", end=" ")
-        
         try:
             import yfinance as yf
             stock = yf.Ticker(ticker)
             end_date = datetime.now()
             start_date = end_date - timedelta(days=365)
-            
+
             price_data = stock.history(start=start_date, end=end_date, auto_adjust=True)
-            
+
             if price_data.empty or len(price_data) < 60:
-                console.print("[red]✗ Insufficient data[/red]")
+                log("[red]✗ Insufficient data[/red]")
                 return None
-            
+
             # Standardize columns
             price_data = price_data.rename(columns={
-                'Open': 'open', 'High': 'high', 'Low': 'low', 
+                'Open': 'open', 'High': 'high', 'Low': 'low',
                 'Close': 'close', 'Volume': 'volume'
             })
             price_data = price_data[['open', 'high', 'low', 'close', 'volume']]
@@ -146,12 +176,12 @@ class StockAnalyzer:
             price_data = price_data.reset_index()
             price_data = price_data.rename(columns={'Date': 'date'})
             price_data['date'] = pd.to_datetime(price_data['date']).dt.tz_localize(None)
-            
-            console.print(f"[green]✓[/green] {len(price_data)} days loaded")
+
+            log(f"  → Loaded {len(price_data)} days of price history")
             return price_data
-            
+
         except Exception as e:
-            console.print(f"[red]✗ Failed: {e}[/red]")
+            log(f"[red]✗ Data fetch failed: {e}[/red]")
             return None
     
     def _get_basic_info(self, ticker: str, df: pd.DataFrame) -> dict:
@@ -212,44 +242,50 @@ class StockAnalyzer:
         """Get ML model prediction."""
         if self.model is None or self.model.model is None:
             return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': 'No model trained'}
-        
+
         try:
+            ml_start = time.time()
+
             # Prepare features
             df_feat = df.copy()
             X = self.feature_engineer.prepare_inference_features(df_feat)
-            
+
             if X.empty:
                 return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': 'Feature preparation failed'}
-            
+
             # Align features with model's expected features
             if self.model.feature_names:
                 # Only keep features that the model was trained on
                 available_features = [f for f in self.model.feature_names if f in X.columns]
                 missing_features = [f for f in self.model.feature_names if f not in X.columns]
-                
+
                 if missing_features:
                     # Add missing features as 0 (safe default)
                     for feat in missing_features:
                         X[feat] = 0
-                
+
                 # Reorder columns to match model's expected order
                 X = X[self.model.feature_names]
-            
+
             # Get prediction for latest row
             latest_features = X.iloc[-1:].values
             prob = self.model.model.predict_proba(latest_features)[0, 1]
-            
+
             direction = "BULLISH" if prob > 0.55 else "BEARISH" if prob < 0.45 else "NEUTRAL"
             confidence = abs(prob - 0.5) * 200
-            
+
+            ml_time = time.time() - ml_start
+            log(f"  → ML prediction: {direction} ({confidence:.0f}% confidence) in {ml_time:.3f}s")
+
             return {
                 'probability': prob,
                 'direction': direction,
                 'confidence': confidence,
                 'error': None
             }
-            
+
         except Exception as e:
+            log(f"  [yellow]→ ML prediction failed: {e}[/yellow]")
             return {'probability': None, 'direction': 'N/A', 'confidence': 0, 'error': str(e)}
     
     def _get_signals(self, df: pd.DataFrame, ml_prediction: dict = None) -> dict:
@@ -282,22 +318,27 @@ class StockAnalyzer:
     def _get_market_regime(self) -> dict:
         """Get current market regime."""
         try:
+            regime_start = time.time()
             import yfinance as yf
             ihsg = yf.Ticker("^JKSE")
             ihsg_data = ihsg.history(start=datetime.now() - timedelta(days=180), end=datetime.now())
-            
+
             if not ihsg_data.empty:
                 prices = ihsg_data['Close']
                 regime = self.regime_detector.detect_regime(prices)
                 multiplier = self.regime_detector.get_position_multiplier(regime)
-                
+
+                regime_time = time.time() - regime_start
+                log(f"  → Market regime: {regime.value} (multiplier: {multiplier:.2f}) in {regime_time:.3f}s")
+
                 return {
                     'regime': regime.value,
                     'multiplier': multiplier
                 }
-        except Exception:
+        except Exception as e:
+            log(f"  [yellow]→ Market regime detection failed: {e}[/yellow]")
             pass
-        
+
         return {'regime': 'NORMAL', 'multiplier': 1.0}
     
     def _get_history(self, df: pd.DataFrame) -> dict:

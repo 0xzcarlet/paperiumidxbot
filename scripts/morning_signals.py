@@ -15,6 +15,7 @@ import os
 import json
 import pickle
 import hashlib
+import time
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,6 +43,16 @@ from strategy.position_manager import PositionManager, Position, OrderType, Posi
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Global timer for logging
+_start_time = time.time()
+
+def log(msg: str):
+    """Log with timestamp and duration."""
+    elapsed = time.time() - _start_time
+    mins = int(elapsed // 60)
+    secs = int(elapsed % 60)
+    console.print(f"[dim][{mins:02d}:{secs:02d}][/dim] {msg}")
 
 
 # Thresholds for order type decision
@@ -124,23 +135,23 @@ class MorningSignals:
             console.print("[bold blue]RUNNING IN TEST MODE (VIEW ONLY)[/bold blue]")
         
         # Step 1: Update data
-        console.print("\n[yellow]Fetching latest market data...[/yellow]")
+        log("[yellow]Fetching latest market data...[/yellow]")
         self._update_data()
-        
+
         # Step 2: Check existing positions
-        console.print("\n[yellow]Checking existing positions...[/yellow]")
+        log("[yellow]Checking existing positions...[/yellow]")
         existing_positions = self._review_existing_positions()
-        
+
         # Step 3: Generate new signals
-        console.print("\n[yellow]Generating trading signals...[/yellow]")
+        log("[yellow]Generating trading signals...[/yellow]")
         new_signals = self._generate_signals(portfolio_value, existing_positions)
-        
+
         # Step 4: Display recommendations
         self._display_recommendations(existing_positions, new_signals, custom_capital=self.custom_capital)
-        
+
         # Step 5: Save positions ONLY in live mode
         if new_signals and is_live:
-            console.print("\n[yellow]Updating position database...[/yellow]")
+            log("[yellow]Updating position database...[/yellow]")
             self._save_positions(new_signals)
         elif new_signals:
             console.print("\n[blue]Test Mode: Signals displayed but not saved to portfolio.[/blue]")
@@ -151,22 +162,24 @@ class MorningSignals:
         """Fetch and update latest price data."""
         console.print("\n[bold cyan]━━━ MARKET DATA UPDATE ━━━[/bold cyan]")
         # Fetch last 10 days to ensure we have latest data
+        fetch_start = time.time()
         data = self.fetcher.fetch_batch(days=10)
-        
+
         if not data.empty:
             count = self.storage.upsert_prices(data)
-            console.print(f"  [green]✓[/green] Successfully updated {count} price records")
+            fetch_time = time.time() - fetch_start
+            log(f"  [green]✓ Successfully updated {count} price records in {fetch_time:.2f}s[/green]")
         else:
-            console.print("  [yellow]⚠[/yellow] No new market data available")
-    
+            log("  [yellow]⚠ No new market data available[/yellow]")
+
     def _review_existing_positions(self) -> Dict[str, Dict]:
         """Review and provide recommendations for existing positions."""
         console.print("\n[bold cyan]━━━ PORTFOLIO REVIEW ━━━[/bold cyan]")
         positions = self.position_manager.get_open_positions()
         recommendations = {}
-        
+
         if not positions:
-            console.print("  [dim]No active positions found in portfolio[/dim]")
+            log("  [dim]No active positions found in portfolio[/dim]")
             return recommendations
         
         # Get latest prices
@@ -218,47 +231,49 @@ class MorningSignals:
         return recommendations
     
     def _generate_signals(
-        self, 
+        self,
         portfolio_value: float,
         existing_positions: Dict[str, Dict]
     ) -> List[Dict]:
         """Generate new trading signals."""
         # Load all data
         all_data = self.storage.get_prices()
-        
+
         if all_data.empty:
-            console.print("  [red]No data available. Run data fetch first.[/red]")
+            log("  [red]No data available. Run data fetch first.[/red]")
             return []
-        
+
         # Calculate signals and ML predictions with progress bar
         data_by_ticker = {}
         ml_predictions = {}
         unique_tickers = all_data['ticker'].unique()
-        
-        
+
+
         # Hourly Caching Logic
         cache_dir = Path(".cache")
         cache_dir.mkdir(exist_ok=True)
-        
+
         # Create unique key based on date, hour, and ticker universe
         ticker_list_str = "_".join(sorted(unique_tickers))
         ticker_hash = hashlib.md5(ticker_list_str.encode()).hexdigest()[:8]
         now = datetime.now()
         cache_key = f"signals_{now.strftime('%Y%m%d_%H')}_{ticker_hash}.pkl"
         cache_path = cache_dir / cache_key
-        
+
         passed_tickers = []
         data_by_ticker = {}
         cached_found = False
-        
+
         if cache_path.exists():
             try:
+                cache_load_start = time.time()
                 with open(cache_path, 'rb') as f:
                     cache_data = pickle.load(f)
                     passed_tickers = cache_data.get('passed_tickers', [])
                     data_by_ticker = cache_data.get('data_by_ticker', {})
                     cached_found = True
-                console.print(f"  [green]✓ Using cached signals for this hour ({cache_path.name})[/green]")
+                cache_time = time.time() - cache_load_start
+                log(f"  [green]✓ Using cached signals for this hour ({cache_path.name}) - loaded in {cache_time:.2f}s[/green]")
             except Exception as e:
                 logger.warning(f"Failed to load signal cache: {e}")
 
@@ -272,13 +287,14 @@ class MorningSignals:
             
             if not cached_found:
                 # Phase 0: Screening
-                console.print(f"  [cyan]Running High-Potential Screener...[/cyan]")
-                
+                log(f"  [cyan]Running High-Potential Screener...[/cyan]")
+
                 # Group data once for efficiency
+                screen_start = time.time()
                 all_grouped = all_data.sort_values('date').groupby('ticker')
-                
+
                 screen_task = progress.add_task("Screening candidates...", total=len(unique_tickers))
-                
+
                 for ticker in unique_tickers:
                     try:
                         df = all_grouped.get_group(ticker)
@@ -287,17 +303,19 @@ class MorningSignals:
                     except KeyError:
                         pass
                     progress.advance(screen_task)
-                    
-                console.print(f"  [green]✓ {len(passed_tickers)} stocks passed screening out of {len(unique_tickers)}[/green]")
-                
+
+                screen_time = time.time() - screen_start
+                log(f"  [green]✓ {len(passed_tickers)} stocks passed screening out of {len(unique_tickers)} in {screen_time:.2f}s[/green]")
+
                 if not passed_tickers:
                     return []
-    
+
                 # Phase 1: Technical signals
+                sig_start = time.time()
                 sig_task = progress.add_task("Calculating technical signals...", total=len(passed_tickers))
                 for ticker in passed_tickers:
                     ticker_data = all_grouped.get_group(ticker)
-                    
+
                     if len(ticker_data) >= config.data.min_data_points:
                         try:
                             signals = self.signal_combiner.calculate_signals(ticker_data)
@@ -305,7 +323,10 @@ class MorningSignals:
                         except Exception as e:
                             logger.warning(f"Signal calculation failed for {ticker}: {e}")
                     progress.advance(sig_task)
-                
+
+                sig_time = time.time() - sig_start
+                log(f"  [green]✓ Technical signals calculated in {sig_time:.2f}s[/green]")
+
                 # Save to cache
                 try:
                     with open(cache_path, 'wb') as f:
@@ -321,6 +342,7 @@ class MorningSignals:
             
             # Phase 2: ML predictions (XGBoost only)
             if self.model.model is not None:
+                ml_start = time.time()
                 ml_task = progress.add_task("Generating XGBOOST predictions...", total=len(data_by_ticker))
                 ml_predictions = {}
                 for ticker, ticker_df in data_by_ticker.items():
@@ -330,7 +352,10 @@ class MorningSignals:
                     except Exception as e:
                         logger.debug(f"XGBoost prediction failed for {ticker}: {e}")
                     progress.advance(ml_task)
-                
+
+                ml_time = time.time() - ml_start
+                log(f"  [green]✓ ML predictions completed in {ml_time:.2f}s[/green]")
+
                 # Rank and process
                 rankings = self.signal_combiner.rank_stocks(data_by_ticker, ml_predictions)
                 if not rankings.empty:
@@ -563,7 +588,8 @@ class MorningSignals:
     def _save_positions(self, signals: List[Dict]):
         """Save new positions to database."""
         today = date.today().isoformat()
-        
+
+        save_start = time.time()
         for sig in signals:
             position = Position(
                 ticker=sig['ticker'],
@@ -581,10 +607,11 @@ class MorningSignals:
                 filled_date=today if sig['order_type'] == 'MARKET' else None,
                 filled_price=sig['entry_price'] if sig['order_type'] == 'MARKET' else None
             )
-            
+
             self.position_manager.create_position(position)
-        
-        console.print(f"\n[green]✓ Saved {len(signals)} positions[/green]")
+
+        save_time = time.time() - save_start
+        log(f"[green]✓ Saved {len(signals)} positions in {save_time:.2f}s[/green]")
 
 
 def main():
