@@ -27,13 +27,12 @@ from rich.progress import (
     BarColumn,
     TaskProgressColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
-    SpeedColumn
+    MofNCompleteColumn
 )
 
 
-
 from config import config
+
 from data.storage import DataStorage
 from data.fetcher import get_sector_mapping
 from ml.model import TradingModel
@@ -351,12 +350,11 @@ class MLBacktest:
                 TaskProgressColumn(),
                 MofNCompleteColumn(),
                 TextColumn("•"),
-                SpeedColumn(precision=1),
-                TextColumn("•"),
                 TimeRemainingColumn(),
                 console=console,
                 refresh_per_second=2
             ) as progress:
+
                 task = progress.add_task("[cyan]Processing tickers...", total=all_data['ticker'].nunique())
 
                 for ticker, group in ticker_groups:
@@ -388,10 +386,9 @@ class MLBacktest:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
-            SpeedColumn(precision=1),
-            TextColumn("•"),
             TimeRemainingColumn(),
             console=console,
+
             refresh_per_second=2
         ) as progress:
             task = progress.add_task("[cyan]Predicting...", total=len(ticker_data_map))
@@ -456,10 +453,9 @@ class MLBacktest:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
-            SpeedColumn(precision=1),
-            TextColumn("•"),
             TimeRemainingColumn(),
             console=console,
+
             refresh_per_second=2
         ) as progress:
             task = progress.add_task("[cyan]Simulating...", total=len(all_dates))
