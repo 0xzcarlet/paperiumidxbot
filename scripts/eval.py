@@ -314,9 +314,7 @@ class MLBacktest:
                 if self.best_model_checkpoint is not None:
                     try:
                         import pickle
-                        import xgboost as xgb
-                        base_model = xgb.Booster()
-                        base_model.load_model(bytearray(self.best_model_checkpoint))
+                        base_model = pickle.loads(self.best_model_checkpoint)  # Load full sklearn model
                         log(f"  → Warm starting from best checkpoint")
                     except Exception as e:
                         log(f"  [yellow]→ Could not load checkpoint: {e}[/yellow]")

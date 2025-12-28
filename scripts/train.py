@@ -149,9 +149,9 @@ def main():
                 best_combined_score = combined_score
                 stagnant_iterations = 0
 
-                # Save this model as the new best checkpoint
+                # Save this model as the new best checkpoint (save entire sklearn wrapper)
                 import pickle
-                best_model = pickle.dumps(bt.global_xgb.model.get_booster())
+                best_model = pickle.dumps(bt.global_xgb.model)  # Save sklearn XGBClassifier, not just booster
                 console.print(f"  [green]✓ New best model! Checkpointed for warm start.[/green]")
 
                 # Model is improving - slightly tighten risk/reward (lower SL, higher TP)
