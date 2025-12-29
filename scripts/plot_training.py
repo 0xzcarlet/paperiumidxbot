@@ -31,9 +31,9 @@ def plot_session(session_data: dict, save_path: Optional[str] = None):
     iter_nums = [it['iteration'] for it in iterations]
     win_rates = [it['metrics']['win_rate'] * 100 for it in iterations]
     wl_ratios = [it['metrics']['wl_ratio'] for it in iterations]
-    total_returns = [it['metrics']['total_return'] * 100 for it in iterations]
+    total_returns = [it['metrics']['total_return'] for it in iterations]
     sharpe_ratios = [it['metrics']['sharpe_ratio'] for it in iterations]
-    max_drawdowns = [it['metrics']['max_drawdown'] * 100 for it in iterations]
+    max_drawdowns = [it['metrics']['max_drawdown'] for it in iterations]
     total_trades = [it['metrics']['total_trades'] for it in iterations]
 
     # Create figure with subplots

@@ -184,8 +184,23 @@ class EODRetraining:
         
         return expired
     
-    def _retrain_model(self) -> Dict:
-        """Retrain global XGBoost model with pooled data from all tickers."""
+    def _retrain_model(self, force: bool = False) -> Dict:
+        """
+        Model retraining.
+        
+        By default, retraining is SKIPPED during EOD processing.
+        Daily retraining causes overfitting to recent noise.
+        Use train.py for proper model training with validation.
+        
+        Args:
+            force: If True, force retrain (not recommended for daily use)
+        """
+        if not force:
+            console.print("  [dim]Model retrain skipped (use --force-retrain for manual)[/dim]")
+            console.print("  [dim]Tip: Use 'uv run python scripts/train.py' for proper training[/dim]")
+            return {'status': 'SKIPPED', 'reason': 'Daily retraining disabled - use train.py'}
+        
+        # Original retraining logic (only runs with --force-retrain)
         all_data = self.storage.get_prices()
         
         if all_data.empty:
@@ -340,7 +355,9 @@ def main():
     
     parser = argparse.ArgumentParser(description='IHSG End-of-Day Processing')
     parser.add_argument('--skip-retrain', action='store_true',
-                       help='Skip model retraining')
+                       help='Skip model retraining step entirely')
+    parser.add_argument('--force-retrain', action='store_true',
+                       help='Force model retraining (not recommended for daily use)')
     
     args = parser.parse_args()
     
@@ -353,7 +370,12 @@ def main():
         eod._evaluate_positions()
         eod._expire_unfilled_orders()
     else:
-        eod.run()
+        # Run full EOD pipeline
+        eod._fetch_eod_data()
+        eod._evaluate_positions()
+        eod._expire_unfilled_orders()
+        eod._retrain_model(force=args.force_retrain)
+        eod._display_summary({}, 0, {})
 
 
 if __name__ == "__main__":

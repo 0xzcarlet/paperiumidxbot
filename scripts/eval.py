@@ -60,7 +60,7 @@ class MLBacktest:
     """
     
     def __init__(self, model_type: str = 'xgboost', retrain: bool = False, custom_model_path: Optional[str] = None,
-                 sl_atr_mult: float = 2.0, tp_atr_mult: float = 3.0):
+                 sl_atr_mult: float = 2.0, tp_atr_mult: float = 3.0, signal_threshold: float = 0.70):
         """
         Args:
             model_type: 'xgboost'
@@ -69,6 +69,7 @@ class MLBacktest:
             custom_model_path: Optional custom path to model file (for parallel execution)
             sl_atr_mult: Stop loss ATR multiplier (dynamic per iteration)
             tp_atr_mult: Take profit ATR multiplier (dynamic per iteration)
+            signal_threshold: Minimum ML score to trigger a trade (default 0.70 for high conviction)
         """
         self.storage = DataStorage(config.data.db_path)
         self.sector_mapping = get_sector_mapping()
@@ -87,6 +88,9 @@ class MLBacktest:
         self.sl_atr_mult = sl_atr_mult  # Gen 5.1: Dynamic stop loss
         self.tp_atr_mult = tp_atr_mult  # Gen 5.1: Dynamic take profit
         self.max_hold_days = 5
+        
+        # Configurable signal threshold for trading
+        self.signal_threshold = signal_threshold
 
         # Model (Global XGBoost)
         self.global_xgb = None
@@ -276,8 +280,10 @@ class MLBacktest:
         keep_mask = ~noise_mask
 
         # Randomly pick 50% of noise to keep
+        # Use fixed seed for reproducibility across iterations
         if bool(noise_mask.any()):
             noise_indices = ret_combined[noise_mask].index
+            np.random.seed(42)  # Fixed seed for reproducible results
             keep_noise_indices = np.random.choice(
                 noise_indices,
                 size=len(noise_indices) // 2,
@@ -305,45 +311,21 @@ class MLBacktest:
                 self.global_xgb = TradingModel(config.ml)
                 self.global_xgb.feature_names = X_combined.columns.tolist()
 
-                # WARM START: Load champion if exists and continue training
-                champ_path = 'models/global_xgb_champion.pkl'
-                base_model = None
-                if os.path.exists(champ_path):
-                    try:
-                        # Load existing champion to use as starting point
-                        temp_model = TradingModel(config.ml)
-                        temp_model.load(champ_path)
-                        base_model = temp_model.model
-                        log(f"  [cyan]Warm start: Loaded champion from {champ_path}[/cyan]")
-                    except Exception as e:
-                        log(f"  [yellow]Could not load champion for warm start: {e}[/yellow]")
-                        base_model = None
-
-                if base_model is None:
-                    # Fresh model if no champion exists
-                    self.global_xgb.model = self.global_xgb._create_model()
-                    log("  [yellow]Training fresh model (no champion found)[/yellow]")
-                else:
-                    # Create new model instance for warm start
-                    self.global_xgb.model = self.global_xgb._create_model()
+                # Gen 6: Train fresh model each iteration
+                # Warm start was causing issues - each iteration should compete fairly
+                self.global_xgb.model = self.global_xgb._create_model()
+                log("  [cyan]Training fresh XGBoost model...[/cyan]")
 
                 # Remove deprecated param
                 if 'use_label_encoder' in self.global_xgb.model.get_params():
                     self.global_xgb.model.set_params(use_label_encoder=False)
 
                 train_start = time.time()
-                # Train with sample weights (warm start if base_model exists)
-                if base_model is not None:
-                    self.global_xgb.model.fit(
-                        X_combined, y_combined,
-                        sample_weight=sample_weights,
-                        xgb_model=base_model.get_booster()
-                    )
-                else:
-                    self.global_xgb.model.fit(
-                        X_combined, y_combined,
-                        sample_weight=sample_weights
-                    )
+                # Train with sample weights (no warm start - fresh model)
+                self.global_xgb.model.fit(
+                    X_combined, y_combined,
+                    sample_weight=sample_weights
+                )
                 train_time = time.time() - train_start
                 log(f"  [green]✓ Trained Global XGBoost model in {train_time:.2f}s[/green]")
             except Exception as e:
@@ -585,6 +567,12 @@ class MLBacktest:
                         if not self.screener._check_criteria(ticker_hist_reset, ticker):
                             continue
 
+                        # === QUALITY FILTER: Momentum Confirmation ===
+                        # Must have positive 5-day momentum (trend alignment)
+                        return_5d = ticker_hist_reset['close'].pct_change(5).iloc[-1]
+                        if pd.isna(return_5d) or return_5d < 0:
+                            continue
+
                         # Use batch-predicted XGB score
                         if ticker in xgb_scores and date in xgb_scores[ticker].index:
                             prediction_score = xgb_scores[ticker].loc[date]
@@ -592,8 +580,9 @@ class MLBacktest:
                             prediction_score = 0.0
                         max_seen_score = max(max_seen_score, prediction_score)
 
-                        # Logic for buy signal 
-                        if prediction_score > 0.15:
+                        # === HIGH CONVICTION THRESHOLD ===
+                        # Only trade when model confidence exceeds threshold
+                        if prediction_score > self.signal_threshold:
                             ticker_day = day_data[day_data['ticker'] == ticker].iloc[0]
 
                             candidates.append({
@@ -677,6 +666,10 @@ class MLBacktest:
         running_max = equity_df['equity'].cummax()
         drawdown = (equity_df['equity'] - running_max) / running_max
         max_dd = drawdown.min()
+        
+        # Fix: Clamp max drawdown to valid range (-100% to 0%)
+        if max_dd < -1.0:
+            max_dd = -1.0
         
         if not trades_df.empty:
             winners = trades_df[trades_df['pnl_pct'] > 0]

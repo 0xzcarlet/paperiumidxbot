@@ -81,7 +81,8 @@ def display_session(session_file: str):
             f"[bold green]Best Iteration: #{best.get('iteration', '?')}[/bold green]\n"
             f"Win Rate: [bold]{best.get('win_rate', 0):.1%}[/bold] | "
             f"W/L: [bold]{best.get('wl_ratio', 0):.2f}x[/bold] | "
-            f"Return: [bold]{best.get('total_return', 0):.1%}[/bold]",
+            f"Return: [bold]{best.get('total_return', 0):.1f}%[/bold] | "
+            f"Score: [bold yellow]{best.get('composite_score', 0):.4f}[/bold yellow]",
             border_style="green"
         )
         console.print(best_panel)
@@ -93,6 +94,7 @@ def display_session(session_file: str):
     metrics_table.add_column("#", justify="right", style="cyan")
     metrics_table.add_column("Win Rate", justify="right")
     metrics_table.add_column("W/L Ratio", justify="right")
+    metrics_table.add_column("Score", justify="right", style="yellow")
     metrics_table.add_column("Return", justify="right")
     metrics_table.add_column("Sharpe", justify="right")
     metrics_table.add_column("Max DD", justify="right")
@@ -104,14 +106,18 @@ def display_session(session_file: str):
         # Color coding based on performance
         wr = metrics['win_rate']
         wr_color = "green" if wr >= params.get('target_score', 0.85) else "yellow" if wr >= 0.6 else "red"
+        
+        # Composite score (new in Gen 6)
+        score = metrics.get('composite_score', 0)
 
         metrics_table.add_row(
             str(it['iteration']),
             f"[{wr_color}]{wr:.1%}[/{wr_color}]",
             f"{metrics['wl_ratio']:.2f}x",
-            f"{metrics['total_return']:.1%}",
+            f"{score:.4f}",
+            f"{metrics['total_return']:.1f}%",
             f"{metrics['sharpe_ratio']:.2f}",
-            f"{metrics['max_drawdown']:.1%}",
+            f"{metrics['max_drawdown']:.1f}%",
             str(metrics['total_trades'])
         )
 
@@ -135,9 +141,9 @@ def display_session(session_file: str):
     wl_stats = f"Min: {min(wl_ratios):.2f}x → Max: {max(wl_ratios):.2f}x"
     charts_table.add_row("W/L Ratio", f"[blue]{wl_spark}[/blue]", wl_stats)
 
-    # Total Return sparkline
-    ret_spark = create_sparkline([r * 100 for r in total_returns], width=40)
-    ret_stats = f"Min: {min(total_returns):.1%} → Max: {max(total_returns):.1%}"
+    # Total Return sparkline (already in percentage form from eval.py)
+    ret_spark = create_sparkline(total_returns, width=40)
+    ret_stats = f"Min: {min(total_returns):.1f}% → Max: {max(total_returns):.1f}%"
     charts_table.add_row("Total Return", f"[magenta]{ret_spark}[/magenta]", ret_stats)
 
     # Sharpe Ratio sparkline
@@ -145,9 +151,9 @@ def display_session(session_file: str):
     sharpe_stats = f"Min: {min(sharpe_ratios):.2f} → Max: {max(sharpe_ratios):.2f}"
     charts_table.add_row("Sharpe Ratio", f"[yellow]{sharpe_spark}[/yellow]", sharpe_stats)
 
-    # Max Drawdown sparkline (inverted - lower is better)
-    dd_spark = create_sparkline([abs(d) * 100 for d in max_drawdowns], width=40)
-    dd_stats = f"Best: {min(max_drawdowns):.1%} → Worst: {max(max_drawdowns):.1%}"
+    # Max Drawdown sparkline (already in percentage form from eval.py)
+    dd_spark = create_sparkline([abs(d) for d in max_drawdowns], width=40)
+    dd_stats = f"Best: {max(max_drawdowns):.1f}% → Worst: {min(max_drawdowns):.1f}%"
     charts_table.add_row("Max Drawdown", f"[red]{dd_spark}[/red]", dd_stats)
 
     console.print(charts_table)
@@ -174,7 +180,7 @@ def display_session(session_file: str):
                     month.get('month', ''),
                     str(month.get('trades', 0)),
                     f"[{wr_color}]{wr:.1f}%[/{wr_color}]",
-                    f"{month.get('avg_pnl', 0):.1f}%"
+                    f"{month.get('avg_return', 0):.1f}%"
                 )
 
             console.print(monthly_table)

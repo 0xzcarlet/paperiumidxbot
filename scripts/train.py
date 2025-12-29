@@ -121,41 +121,67 @@ def main():
         processed_data_list.append(group)
     featured_data = pd.concat(processed_data_list).sort_values(['date', 'ticker'])
 
-    # Gen 5.1: Dynamic SL/TP tuning across iterations
+    # Gen 6: Improved training with composite scoring and smart optimization
     import numpy as np
 
+    def calculate_composite_score(results, min_trades=52):
+        """
+        Composite score balancing all objectives:
+        Score = Win_Rate * Trade_Penalty * DD_Penalty * WL_Bonus
+        
+        - Win_Rate: raw win rate (target 0.80+)
+        - Trade_Penalty: 1.0 if trades >= min_trades, else trades/min_trades
+        - DD_Penalty: 1.0 if DD <= -10%, else penalized
+        - WL_Bonus: Bonus for high W/L ratio
+        """
+        wr = results.get('win_rate', 0) / 100.0
+        trades = results.get('total_trades', 0)
+        dd = abs(results.get('max_drawdown', 100))
+        
+        avg_win = abs(results.get('avg_win', 0))
+        avg_loss = abs(results.get('avg_loss', 1))
+        wl = avg_win / avg_loss if avg_loss > 0 else 0
+        
+        # Penalties/bonuses
+        trade_penalty = min(1.0, trades / min_trades) if min_trades > 0 else 1.0
+        dd_penalty = max(0.5, 1.0 - dd / 50) if dd > 10 else 1.0
+        wl_bonus = 1.0 + max(0, (wl - 1.0) * 0.1)
+        
+        return wr * trade_penalty * dd_penalty * wl_bonus
+
+    # Grid search configurations for first pass
+    sl_values = [1.5, 2.0, 2.5, 3.0]
+    tp_values = [2.0, 3.0, 4.0, 5.0]
+    grid_configs = [(sl, tp) for sl in sl_values for tp in tp_values]  # 16 combinations
+
     # Tracking best configuration
+    best_score = 0.0
     best_wr = 0.0
     best_sl_mult = 2.0
     best_tp_mult = 3.0
-    best_config = {'sl': best_sl_mult, 'tp': best_tp_mult, 'wr': 0.0, 'wl': 0.0}
+    best_config = {'sl': best_sl_mult, 'tp': best_tp_mult, 'wr': 0.0, 'wl': 0.0, 'score': 0.0}
+    no_improve_count = 0  # For early stopping
 
     # Create backtester ONCE (preserve cache across iterations)
-    bt = MLBacktest(model_type='xgboost', retrain=True)
+    # Use moderate threshold during training for balanced feedback
+    bt = MLBacktest(model_type='xgboost', retrain=True, signal_threshold=0.40)
 
     iteration = 0
     while iteration < args.max_iter:
         iteration += 1
 
-        # Intelligent SL/TP selection - explore around best known config
-        if iteration == 1:
-            sl_mult = 2.0
-            tp_mult = 3.0
-        elif iteration <= 10:
-            # First 10: small perturbations around baseline
-            sl_mult = float(np.clip(2.0 + np.random.uniform(-0.3, 0.3), 1.5, 3.5))
-            tp_mult = float(np.clip(3.0 + np.random.uniform(-0.5, 0.5), 2.0, 5.0))
-        elif iteration <= 30:
-            # 11-30: wider search around current best
-            sl_mult = float(np.clip(best_sl_mult + np.random.uniform(-0.5, 0.5), 1.5, 3.5))
-            tp_mult = float(np.clip(best_tp_mult + np.random.uniform(-0.8, 0.8), 2.0, 5.0))
+        # Phase 1 (1-16): Grid search through predefined configurations
+        # Phase 2 (17+): Fine-tune around best found configuration
+        if iteration <= len(grid_configs):
+            sl_mult, tp_mult = grid_configs[iteration - 1]
         else:
-            # 31+: fine-tuning around best
+            # Fine-tune around best with small perturbations
             sl_mult = float(np.clip(best_sl_mult + np.random.uniform(-0.2, 0.2), 1.5, 3.5))
             tp_mult = float(np.clip(best_tp_mult + np.random.uniform(-0.3, 0.3), 2.0, 5.0))
 
         console.print(f"\n[bold magenta]Iteration {iteration}/{args.max_iter}[/bold magenta]")
-        console.print(f"  SL/TP Config: [cyan]{sl_mult:.2f}x ATR[/cyan] / [cyan]{tp_mult:.2f}x ATR[/cyan]")
+        phase = "Grid Search" if iteration <= len(grid_configs) else "Fine-Tuning"
+        console.print(f"  Phase: [cyan]{phase}[/cyan] | SL/TP: [cyan]{sl_mult:.2f}x / {tp_mult:.2f}x ATR[/cyan]")
 
         # Update SL/TP for this iteration
         bt.sl_atr_mult = sl_mult
@@ -166,35 +192,43 @@ def main():
         iteration_time = (datetime.now() - iteration_start).total_seconds()
 
         if results and 'win_rate' in results:
-            # Calculate Metrics (Gen 5 Improved Formula)
-            monthly_wrs = [m['win_rate'] / 100.0 for m in results.get('monthly_metrics', [])]
-            effective_wr = (sum(monthly_wrs) / len(monthly_wrs) * 0.7) + (min(monthly_wrs) * 0.3) if monthly_wrs else results['win_rate'] / 100.0
-
+            # Calculate metrics
             avg_win = abs(results.get('avg_win', 0))
             avg_loss = abs(results.get('avg_loss', 1))
             wl_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-
-            # Pure Win Rate Focus
-            # W/L ratio naturally follows when win rate is high
-            # Keep it simple - what worked for Gen 1-4
-            combined_score = effective_wr
+            effective_wr = results.get('win_rate', 0) / 100.0
+            total_trades = results.get('total_trades', 0)
+            max_dd = abs(results.get('max_drawdown', 0))
             
-            console.print(f"  Win Rate: [bold]{effective_wr:.1%}[/bold]")
-            console.print(f"  W/L Ratio: [bold]{wl_ratio:.2f}x[/bold]")
+            # Calculate composite score
+            composite_score = calculate_composite_score(results)
+            
+            console.print(f"  Win Rate: [bold]{effective_wr:.1%}[/bold] | Trades: {total_trades} | W/L: {wl_ratio:.2f}x | DD: {max_dd:.1f}%")
+            console.print(f"  [yellow]Composite Score: {composite_score:.4f}[/yellow]")
 
-            # Gen 5.1: Track best SL/TP configuration
-            if effective_wr > best_wr:
+            # Track if this is the best so far
+            if composite_score > best_score * 1.001:  # 0.1% improvement threshold
+                best_score = composite_score
                 best_wr = effective_wr
                 best_sl_mult = sl_mult
                 best_tp_mult = tp_mult
-                best_config = {'sl': sl_mult, 'tp': tp_mult, 'wr': effective_wr, 'wl': wl_ratio}
-                console.print(f"  [green]New best SL/TP: {sl_mult:.2f}x / {tp_mult:.2f}x[/green]")
+                best_config = {
+                    'sl': sl_mult, 'tp': tp_mult, 
+                    'wr': effective_wr, 'wl': wl_ratio, 
+                    'score': composite_score, 'trades': total_trades
+                }
+                no_improve_count = 0
+                console.print(f"  [green]★ New Best! Score: {composite_score:.4f}[/green]")
+            else:
+                no_improve_count += 1
+                console.print(f"  [dim]No improvement ({no_improve_count}/5)[/dim]")
 
             # Save iteration data to session file
             iteration_data = {
                 "iteration": iteration,
                 "timestamp": datetime.now().isoformat(),
                 "duration_seconds": iteration_time,
+                "phase": phase,
                 "sl_tp_config": {
                     "sl_atr_mult": float(sl_mult),
                     "tp_atr_mult": float(tp_mult)
@@ -202,11 +236,12 @@ def main():
                 "metrics": {
                     "win_rate": float(effective_wr),
                     "wl_ratio": float(wl_ratio),
+                    "composite_score": float(composite_score),
                     "total_return": float(results.get('total_return', 0)),
                     "sharpe_ratio": float(results.get('sharpe_ratio', 0)),
                     "sortino_ratio": float(results.get('sortino_ratio', 0)),
                     "max_drawdown": float(results.get('max_drawdown', 0)),
-                    "total_trades": int(results.get('total_trades', 0)),
+                    "total_trades": int(total_trades),
                     "avg_win": float(avg_win),
                     "avg_loss": float(avg_loss)
                 },
@@ -219,52 +254,45 @@ def main():
             with open(session_file, 'w') as f:
                 json.dump(session_data, f, indent=2)
 
-            # Simple, no complex optimization
-            # Just train fresh models and pick the best one
-
-            # Metadata for comparison
+            # Save champion if this is the best and --force is set
             metadata_path = 'models/champion_metadata.json'
             if os.path.exists(metadata_path):
                 try:
                     with open(metadata_path, 'r') as f:
                         metadata = json.load(f)
                 except:
-                    metadata = {'xgboost': {'combined_score': 0.0}}
+                    metadata = {'xgboost': {'composite_score': 0.0}}
             else:
-                metadata = {'xgboost': {'combined_score': 0.0}}
+                metadata = {'xgboost': {'composite_score': 0.0}}
                 
-            # Use Win Rate (effective_wr)
-            current_best_wr = metadata.get('xgboost', {}).get('win_rate', 0.0)
+            current_best_score = metadata.get('xgboost', {}).get('composite_score', 0.0)
 
-            if args.force:
-                if effective_wr > current_best_wr:
-                    console.print(f"  [green]Champion Updated! ({current_best_wr:.1%} -> {effective_wr:.1%})[/green]")
-                    save_path = "models/global_xgb_champion.pkl"
-                    bt.global_xgb.save(save_path)
-
-                    metadata['xgboost'] = {
-                        'win_rate': float(effective_wr),
-                        'wl_ratio': float(wl_ratio),
-                        'sl_atr_mult': float(sl_mult),
-                        'tp_atr_mult': float(tp_mult),
-                        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'target_met': bool(effective_wr >= args.target)
-                    }
-                    with open(metadata_path, 'w') as f:
-                        json.dump(metadata, f, indent=4)
-                else:
-                    console.print(f"  [yellow]No improvement over champ ({current_best_wr:.1%}).[/yellow]")
-            else:
-                # Save with new name
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-                save_path = f"models/xgb_model_{timestamp}.pkl"
+            if args.force and composite_score > current_best_score:
+                console.print(f"  [green]Champion Updated! (Score: {current_best_score:.4f} → {composite_score:.4f})[/green]")
+                save_path = "models/global_xgb_champion.pkl"
                 bt.global_xgb.save(save_path)
-                console.print(f"  [blue]Model saved to {save_path}[/blue]")
+
+                metadata['xgboost'] = {
+                    'win_rate': float(effective_wr),
+                    'wl_ratio': float(wl_ratio),
+                    'composite_score': float(composite_score),
+                    'total_trades': int(total_trades),
+                    'sl_atr_mult': float(sl_mult),
+                    'tp_atr_mult': float(tp_mult),
+                    'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'target_met': bool(effective_wr >= args.target)
+                }
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=4)
             
             # Check if target reached
-            if effective_wr >= args.target:
-                console.print(f"\n[bold green]🎯 Target reached! Optimization complete.[/bold green]")
-                console.print(f"  Final: WR={effective_wr:.1%}, W/L={wl_ratio:.2f}x")
+            if effective_wr >= args.target and total_trades >= 52:
+                console.print(f"\n[bold green]🎯 Target reached! WR={effective_wr:.1%}, Trades={total_trades}[/bold green]")
+                break
+            
+            # Early stopping: no improvement for 5 consecutive iterations (after grid search)
+            if iteration > len(grid_configs) and no_improve_count >= 5:
+                console.print(f"\n[yellow]⚠ Early stopping: No improvement for 5 iterations[/yellow]")
                 break
         else:
             console.print("[red]Backtest iteration failed.[/red]")
